@@ -99,3 +99,124 @@ class DLQList(BaseModel):
     limit: int
     offset: int
     total: int
+
+
+# --- V0.5: ML artifact & lineage platform ---
+
+
+class ArtifactOut(BaseModel):
+    id: uuid.UUID
+    content_hash: str
+    storage_key: str
+    artifact_type: str
+    size_bytes: Optional[int] = None
+    status: str
+    job_id: Optional[uuid.UUID] = None
+    attempt_number: Optional[int] = None
+    created_at: datetime
+    uploaded_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ArtifactList(BaseModel):
+    items: list[ArtifactOut]
+    limit: int
+    offset: int
+    total: int
+
+
+class DatasetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+
+
+class DatasetOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DatasetVersionOut(BaseModel):
+    dataset_id: uuid.UUID
+    version_number: int
+    artifact_id: uuid.UUID
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DatasetVersionList(BaseModel):
+    items: list[DatasetVersionOut]
+    limit: int
+    offset: int
+    total: int
+
+
+class ModelCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+
+
+class ModelOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ModelVersionCreate(BaseModel):
+    artifact_id: uuid.UUID
+    training_run_id: Optional[uuid.UUID] = None
+
+
+class ModelVersionOut(BaseModel):
+    model_id: uuid.UUID
+    version_number: int
+    artifact_id: uuid.UUID
+    training_run_id: Optional[uuid.UUID] = None
+    registered_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class ModelVersionList(BaseModel):
+    items: list[ModelVersionOut]
+    limit: int
+    offset: int
+    total: int
+
+
+class TrainingRunCreate(BaseModel):
+    job_type: str = Field(min_length=1, max_length=128)
+    dataset_id: uuid.UUID
+    dataset_version_number: int
+    training_config: dict[str, Any] = Field(default_factory=dict)
+    code_commit: str
+    container_image: str
+    base_model_id: Optional[uuid.UUID] = None
+    base_model_version_number: Optional[int] = None
+    random_seed: Optional[int] = None
+    priority: int = Field(default=50, ge=0, le=100)
+    job_config: Optional[dict[str, Any]] = None
+
+
+class TrainingRunOut(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    dataset_id: uuid.UUID
+    dataset_version_number: int
+    base_model_id: Optional[uuid.UUID] = None
+    base_model_version_number: Optional[int] = None
+    training_config: dict[str, Any]
+    code_commit: str
+    container_image: str
+    random_seed: Optional[int] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

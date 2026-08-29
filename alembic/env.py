@@ -7,6 +7,7 @@ from app.config import settings
 from app.db import Base
 from app.models import (  # noqa: F401 -- registers models with Base.metadata
     job, outbox, attempt, dlq, capacity, reservation, scheduling_decision,
+    artifact, dataset, model, training_run,
 )
 
 config = context.config

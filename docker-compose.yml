@@ -37,11 +37,27 @@ services:
       timeout: 3s
       retries: 20
 
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   api:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/postgres
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_ENDPOINT: minio:9000
       LOG_LEVEL: INFO
       PORT: 8000
     ports:
@@ -50,6 +66,8 @@ services:
       db:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   outbox-relay:
@@ -103,4 +121,17 @@ services:
       db:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+
+  reconciler:
+    build: .
+    command: ["python", "-m", "reconciler.main"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/postgres
+      MINIO_ENDPOINT: minio:9000
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
         condition: service_healthy

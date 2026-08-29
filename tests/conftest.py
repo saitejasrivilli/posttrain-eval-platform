@@ -11,7 +11,10 @@ os.environ.setdefault(
 
 from app.db import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import job, outbox, attempt, dlq, capacity, reservation, scheduling_decision  # noqa: F401,E402
+from app.models import (  # noqa: F401,E402
+    job, outbox, attempt, dlq, capacity, reservation, scheduling_decision,
+    artifact, dataset, model, training_run,
+)
 from app.models.capacity import SINGLETON_ID  # noqa: E402
 
 engine = create_engine(os.environ["DATABASE_URL"])
@@ -44,7 +47,12 @@ def _create_schema():
 def _clean_table():
     yield
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE jobs, outbox, attempts, dlq, reservations, scheduling_decisions CASCADE"))
+        conn.execute(
+            text(
+                "TRUNCATE TABLE jobs, outbox, attempts, dlq, reservations, scheduling_decisions, "
+                "artifacts, datasets, dataset_versions, models, model_versions, training_runs CASCADE"
+            )
+        )
         conn.execute(
             text(
                 "UPDATE capacity SET total_cpu=:cpu, allocated_cpu=0, total_memory_mb=:mem, "
@@ -68,6 +76,26 @@ def reserve_for_claim(db, job, cpu=1, memory_mb=512, gpu=0):
     assert reserved, "test helper: capacity insufficient for reservation"
     reservations_repo.insert(db, job.id, prospective_attempt_number, cpu, memory_mb, gpu)
     db.commit()
+
+
+@pytest.fixture()
+def storage_client():
+    """Moto-mocked S3 -- fast, in-memory, no real MinIO needed for unit/
+    integration tests. Live clean-room verification uses real MinIO
+    separately (docker-compose).
+
+    Moto intercepts botocore's real AWS endpoints, not an arbitrary custom
+    endpoint_url (e.g. MinIO's) -- so the mocked client is built WITHOUT
+    endpoint_url, unlike app.storage.make_client()'s production client."""
+    import boto3
+    from moto import mock_aws
+
+    from app.storage import ensure_bucket
+
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        ensure_bucket(client)
+        yield client
 
 
 @pytest.fixture()

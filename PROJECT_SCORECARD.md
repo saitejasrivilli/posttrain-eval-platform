@@ -142,8 +142,43 @@ Status: **COMPLETE — v0.4.0**
 - DLQ redrive/reprocessing tooling
 - Authentication / authorization
 
+## V0.5 — ML Artifact & Lineage Platform
+Status: **COMPLETE — v0.5.0**
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Metadata-first artifact lifecycle (PENDING/UPLOADED/FAILED) | Done | `app/models/artifact.py`, `app/repository/artifacts.py`, ADR 013; `tests/test_artifact_consistency.py::test_upload_happy_path_reaches_uploaded` |
+| Upload lease (uploader ownership, reuses ADR 004's fencing mechanism) | Done | `app/repository/artifacts.py::claim_upload_lease/renew_upload_lease/mark_uploaded` (fencing-conditioned on `uploader_id`); `tests/test_artifact_consistency.py::test_pending_row_with_live_lease_is_never_touched_by_reconciler`, `test_uploader_renewing_lease_survives_concurrent_reconciler_sweeps` (live race, concurrent threads) |
+| Abandoned-upload reconciliation → FAILED | Done | `app/services/reconciler.py::reconcile_pending_artifacts`; `tests/test_artifact_consistency.py::test_metadata_committed_upload_never_happens_reconciles_to_failed` |
+| Status-flip-lost self-healing → UPLOADED (hash-verified, not existence-only) | Done | Same file: `test_upload_succeeds_but_status_flip_lost_reconciler_self_heals` |
+| Hash-mismatch never falsely promotes | Done | `tests/test_release_readiness_v0_5.py::test_hash_mismatch_never_promotes_to_uploaded` |
+| Content-addressed identity (SHA-256 → deterministic storage key) | Done | `app/storage.py::hash_bytes/storage_key_for_hash`; `tests/test_artifact_consistency.py::test_duplicate_upload_is_idempotent_no_duplicate_row` |
+| Orphan detection, never auto-deleted | Done | `app/services/reconciler.py::detect_orphans`; `tests/test_release_readiness_v0_5.py::test_orphan_artifact_detected_and_never_deleted` |
+| Reconciler crash-tolerance (fifth poller process) | Done | `reconciler/main.py`; `tests/test_release_readiness_v0_5.py::test_reconciler_crash_mid_cycle_leaves_other_artifact_untouched` |
+| Dataset versioning: immutable, duplicate content allowed as new version | Done | `app/repository/datasets.py`, ADR 010; `tests/test_datasets_and_models.py::test_dataset_versions_are_sequential_and_immutable`, `test_duplicate_content_creates_new_dataset_version_but_shares_artifact` |
+| Model versioning: immutable, duplicate registration rejected (asymmetric with datasets, deliberately) | Done | `app/repository/models.py` (unique index on `artifact_id`); `tests/test_datasets_and_models.py::test_duplicate_model_registration_rejected` |
+| Model registration is explicit, never automatic on training success | Done | `app/services/models.py::register_version` (separate endpoint, no auto-trigger anywhere); `tests/test_datasets_and_models.py::test_model_registration_is_not_automatic_on_training_success` |
+| Model registration requires `UPLOADED` artifact (hard invariant) | Done | `tests/test_datasets_and_models.py::test_model_registration_requires_uploaded_artifact` |
+| Training-run lineage (dataset version, base model, config, code commit, job/attempt, artifact) | Done | `app/models/training_run.py`, `app/services/lineage.py` (fixed FK chain, ADR 012); `tests/test_training_runs_and_lineage.py::test_full_lineage_chain_end_to_end`, `test_base_model_lineage_one_level` |
+| Training run immutable (no update path) | Done | `app/repository/training_runs.py` — no update function exists; `tests/test_training_runs_and_lineage.py::test_training_run_immutable_no_update_path` (structural proof) |
+| V0.2/V0.3/V0.4 pipeline unmodified, TrainingRun references it | Done | `app/services/training_runs.py::create_training_run` calls the existing unmodified `jobs_service.create_job`; `tests/test_training_runs_and_lineage.py::test_training_run_references_existing_job_pipeline_unmodified` + all 70 pre-existing V0.1-V0.4 tests still passing unmodified |
+| Cancelled training / retry-producing-new-artifact | Done | `tests/test_release_readiness_v0_5.py::test_cancelled_training_run_artifact_follows_own_lifecycle_no_special_case`, `test_retry_produces_a_second_distinct_artifact` |
+| Clean migration | Done | 17/17 migrations (`0001`-`0017`, including the circular-FK resolution between `model_versions`/`training_runs`) applied from scratch, this session, locally and in the Docker image |
+| Live end-to-end verification | Done | Real 9-container `docker compose` stack (api/worker/outbox-relay/recovery/scheduler/reconciler/Redpanda/Postgres/MinIO): registered a real dataset version against real MinIO, created a training run that flowed through the **unmodified** V0.2/V0.3/V0.4 pipeline to `SUCCEEDED`, uploaded a real model artifact, explicitly registered it, and queried full lineage end-to-end via `GET /v1/models/{id}/versions/{n}/lineage` |
+| Unit/integration tests | Done | 90/90 passing, real Postgres, moto-mocked S3 for speed (live verification used real MinIO separately) |
+
+**Release note (v0.5.0):** The artifact consistency model is **eventual consistency with deterministic reconciliation**, explicitly not atomic PostgreSQL+object-storage transactions — Postgres is authoritative metadata, object storage holds bytes, the Reconciler detects and repairs known divergence via the same conditional-UPDATE primitive trusted since V0.2. Content-addressing (SHA-256) makes duplicate uploads naturally idempotent and reconciliation's self-heal path safe (hash-verified, not existence-only). The upload-ownership lease reuses V0.3's ADR 004 fencing mechanism directly rather than inventing new machinery, closing the exact race the design review flagged (an uploader actively renewing its lease is never touched by a concurrent Reconciler sweep, proven under real thread concurrency). Model registration remains structurally separate from training success — no code path anywhere auto-creates a `ModelVersion` from a completed `TrainingRun`. Lineage is a fixed FK chain (ADR 012), not a generic graph, matching this project's consistent rejection of speculative infrastructure. No exactly-once claims, no Spark/Iceberg/Delta/Kubernetes/Ray/multi-region/auto-deletion/generic-graph anywhere in V0.5.
+
+## Explicitly deferred (not implemented, not claimed) — updated for V0.5
+- Spark, Iceberg, Delta Lake, Databricks
+- Kubernetes, Ray, Slurm, multi-region storage
+- Generic lineage graph engine (ADR 012 — revisit only if a genuinely graph-shaped need emerges, e.g. multi-parent model ensembling)
+- Artifact deletion/garbage-collection tooling
+- Real training execution (V0.6), evaluation/quality gates (V0.7), model promotion workflow (V0.8)
+- Authentication / authorization
+
 ## Future versions (not started)
-V0.5 ML lifecycle (dataset/model/artifact lineage), V0.6 post-training (SFT/DPO/GRPO), V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
+V0.6 real post-training execution (SFT/LoRA against a small real model, checkpoint/resume, real GPU worker concerns), V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
 
 ## Rule
 No row marked "Done" without a corresponding artifact (test output, CI run link, or doc file) — no self-certified checkmarks.

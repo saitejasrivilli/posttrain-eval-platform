@@ -29,5 +29,15 @@ class Settings(BaseSettings):
     default_memory_mb: int = 512
     default_gpu: int = 0
 
+    # V0.5 -- see ARCHITECTURE_V0.5.md "Config additions"
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "artifacts"
+    reconciler_poll_interval_ms: int = 5000
+    artifact_pending_grace_period_seconds: int = 300
+    upload_lease_duration_seconds: int = 60
+    upload_heartbeat_interval_seconds: int = 10
+
 
 settings = Settings()
