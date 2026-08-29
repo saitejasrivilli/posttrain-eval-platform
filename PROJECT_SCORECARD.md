@@ -103,8 +103,31 @@ Status: **COMPLETE — v0.3.0**
 - Multi-region infrastructure
 - Workflow DAGs
 
+## V0.4 — Resource-Aware Scheduler
+Status: **DESIGN PHASE** (design docs drafted, awaiting review — no implementation yet)
+
+| Gate | Status |
+|---|---|
+| REQUIREMENTS_V0.4.md | Done — pending user review |
+| ARCHITECTURE_V0.4.md (updated HLD) | Done — pending user review |
+| SCHEDULING_POLICY_V0.4.md | Done — pending user review |
+| RESOURCE_MODEL_V0.4.md | Done — pending user review |
+| STATE_TRANSITIONS_V0.4.md | Done — pending user review |
+| ADR 007 (atomic resource reservation) | Done — pending user review |
+| ADR 008 (scheduling policy: priority + bounded aging) | Done — pending user review |
+| ADR 009 (scheduler concurrency safety) | Done — pending user review |
+| DB_SCHEMA_CHANGES_V0.4.md | Done — pending user review |
+| API_CHANGES_V0.4.md | Done — pending user review |
+| FAILURE_SCENARIOS_V0.4.md | Done — pending user review |
+| Implementation | Not started |
+| Concurrent-scheduler / no-overcommit test | Not started (release-blocking, same tier as V0.3's split-brain test) |
+| Starvation-prevention test (measured, not estimated) | Not started |
+| Unit/integration tests | Not started |
+| Clean-room Docker verification (multi-scheduler) | Not started |
+| Tag v0.4.0 | Not started |
+
 ## Future versions (not started)
-V0.4 resource-aware scheduling (priority, fairness, admission control, CPU/GPU capacity), V0.5 ML lifecycle, V0.6 post-training, V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
+V0.5 ML lifecycle, V0.6 post-training, V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
 
 ## Rule
 No row marked "Done" without a corresponding artifact (test output, CI run link, or doc file) — no self-certified checkmarks.
