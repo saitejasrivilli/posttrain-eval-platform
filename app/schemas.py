@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class JobCreate(BaseModel):
     job_type: str = Field(min_length=1, max_length=128)
     config: Optional[dict[str, Any]] = None
+    priority: int = Field(default=50, ge=0, le=100)
 
 
 class JobUpdate(BaseModel):
@@ -26,6 +27,7 @@ class JobOut(BaseModel):
     lease_owner: Optional[str] = None
     lease_expires_at: Optional[datetime] = None
     next_retry_at: Optional[datetime] = None
+    priority: int = 50
     created_at: datetime
     updated_at: datetime
 
@@ -37,6 +39,35 @@ class JobList(BaseModel):
     limit: int
     offset: int
     total: int
+
+
+class SchedulingDecisionOut(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    decided_at: datetime
+    decision: str
+    reason: str
+    requested_cpu: int
+    requested_memory_mb: int
+    requested_gpu: int
+    available_cpu_snapshot: int
+    available_memory_mb_snapshot: int
+    available_gpu_snapshot: int
+    effective_priority: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CapacityOut(BaseModel):
+    total_cpu: int
+    allocated_cpu: int
+    available_cpu: int
+    total_memory_mb: int
+    allocated_memory_mb: int
+    available_memory_mb: int
+    total_gpu: int
+    allocated_gpu: int
+    available_gpu: int
 
 
 class AttemptOut(BaseModel):

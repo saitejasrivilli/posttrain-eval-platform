@@ -4,6 +4,7 @@ from app.schemas import JobCreate
 from app.services import jobs as service
 from app.services.recovery import reclaim_stale_leases
 from app.services.worker import process_job_message
+from tests.conftest import reserve_for_claim
 
 
 def test_real_heartbeat_thread_keeps_slow_job_alive(db_session, monkeypatch):
@@ -18,6 +19,7 @@ def test_real_heartbeat_thread_keeps_slow_job_alive(db_session, monkeypatch):
     monkeypatch.setattr(settings, "heartbeat_interval_seconds", 1)
 
     job = service.create_job(db_session, JobCreate(job_type="sft", config={"sleep_seconds": 3}))
+    reserve_for_claim(db_session, job)
 
     outcome = process_job_message(db_session, job.id, worker_id="w1")
 

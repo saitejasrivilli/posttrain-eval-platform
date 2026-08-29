@@ -91,3 +91,16 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+
+  scheduler:
+    build: .
+    command: ["python", "-m", "scheduler.main"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy

@@ -11,7 +11,7 @@ from app.repository import jobs as repo
 from app.schemas import JobCreate
 from app.services import jobs as service
 from app.services.recovery import reclaim_stale_leases
-from tests.conftest import engine
+from tests.conftest import engine, reserve_for_claim
 
 
 def _expire_lease(db_session, job_id):
@@ -24,6 +24,7 @@ def _expire_lease(db_session, job_id):
 
 def test_heartbeat_renews_lease(db_session):
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed = repo.claim(db_session, job.id, "w1", lease_duration_seconds=30)
     original_expiry = claimed.lease_expires_at
 
@@ -37,6 +38,7 @@ def test_heartbeat_renews_lease(db_session):
 def test_heartbeat_fails_after_fencing_out(db_session):
     """A worker whose attempt_number has been superseded cannot renew."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed = repo.claim(db_session, job.id, "w1", lease_duration_seconds=30)
     _expire_lease(db_session, job.id)
     reclaim_stale_leases(db_session)  # worker-B (Recovery) takes over -> attempt_number+1
@@ -48,6 +50,7 @@ def test_heartbeat_fails_after_fencing_out(db_session):
 
 def test_stale_lease_is_reclaimed_and_old_attempt_marked_lost(db_session):
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed = repo.claim(db_session, job.id, "w1", lease_duration_seconds=30)
     claimed_attempt_number = claimed.attempt_number  # capture before any further commit expires it
     attempts_repo.insert(db_session, job.id, claimed_attempt_number, "w1")
@@ -72,6 +75,7 @@ def test_split_brain_original_worker_cannot_commit_after_reclamation(db_session)
     report SUCCESS using its stale attempt_number -- this must affect zero
     rows and must not alter the already-finalized job."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
 
     # Worker A claims attempt 1.
     claimed_a = repo.claim(db_session, job.id, "worker-A", lease_duration_seconds=30)
@@ -94,6 +98,7 @@ def test_split_brain_original_worker_cannot_commit_after_reclamation(db_session)
         text("UPDATE jobs SET next_retry_at = now() WHERE id = :id"), {"id": str(job.id)}
     )
     db_session.commit()
+    reserve_for_claim(db_session, repo.get(db_session, job.id))
 
     # Worker B claims attempt 2 and completes it successfully.
     claimed_b = repo.claim(db_session, job.id, "worker-B", lease_duration_seconds=30)
@@ -124,6 +129,7 @@ def test_split_brain_original_worker_heartbeat_also_rejected(db_session):
     """Same split-brain scenario, but Worker A's stale write is a heartbeat
     renewal instead of a terminal commit -- also must be rejected."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed_a = repo.claim(db_session, job.id, "worker-A", lease_duration_seconds=30)
     _expire_lease(db_session, job.id)
     reclaim_stale_leases(db_session)
@@ -139,6 +145,7 @@ def test_two_recovery_processes_race_the_same_stale_job(db_session):
     setup = TestSession()
     job = service.create_job(setup, JobCreate(job_type="sft"))
     job_id = job.id  # capture before the session that created it is closed
+    reserve_for_claim(setup, job)
     repo.claim(setup, job_id, "w1", lease_duration_seconds=30)
     _expire_lease(setup, job_id)
     setup.close()
@@ -175,6 +182,7 @@ def test_slow_but_healthy_worker_is_never_reclaimed(db_session):
     """A worker whose heartbeats keep arriving must never be reclaimed, no
     matter how long its execution body runs."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed = repo.claim(db_session, job.id, "w1", lease_duration_seconds=2)
 
     # Simulate 3 heartbeats over a span longer than the lease duration would

@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.repository import attempts as attempts_repo
+from app.repository import capacity as capacity_repo
 from app.repository import jobs as repo
 from app.repository import outbox as outbox_repo
+from app.repository import reservations as reservations_repo
 from app.retry_policy import compute_next_retry_at
 
 logger = logging.getLogger("app")
@@ -24,11 +26,22 @@ def reclaim_stale_leases(db: Session) -> int:
             settings.max_delay_seconds,
             settings.jitter_ratio,
         )
-        result = repo.reclaim_stale(db, job.id, settings.max_attempts, next_retry_at)
+        # ADR 009: reclaim, reservation release, and marking the attempt LOST
+        # must be one atomic transaction -- a reservation must never survive
+        # past the same commit that fences the old owner and records LOST,
+        # and vice versa (a crash must never leave one done without the other).
+        result = repo.reclaim_stale(db, job.id, settings.max_attempts, next_retry_at, commit=False)
         if result is None:
+            db.rollback()
             continue  # another recovery process (or a heartbeat) won the race
         lost_attempt_number, new_status = result  # the just-fenced attempt's own number
-        attempts_repo.mark_lost(db, job.id, lost_attempt_number, worker_id=job.lease_owner or "unknown")
+        attempts_repo.mark_lost(
+            db, job.id, lost_attempt_number, worker_id=job.lease_owner or "unknown", commit=False
+        )
+        released = reservations_repo.release(db, job.id, lost_attempt_number)
+        if released is not None:
+            capacity_repo.release(db, released.cpu, released.memory_mb, released.gpu)
+        db.commit()
         reclaimed += 1
         logger.info(
             "job_reclaimed",

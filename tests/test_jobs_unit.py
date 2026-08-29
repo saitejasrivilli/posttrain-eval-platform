@@ -11,7 +11,7 @@ from app.services import jobs as service
 def test_create_job_auto_queues(monkeypatch):
     captured = {}
 
-    def fake_create_and_enqueue(db, job, queued_status, event_type):
+    def fake_create_and_enqueue(db, job, queued_status):
         captured["job"] = job
         job.status = queued_status
         return job

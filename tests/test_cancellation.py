@@ -4,6 +4,7 @@ from app.repository import jobs as repo
 from app.schemas import JobCreate
 from app.services import jobs as service
 from app.services.worker import process_job_message
+from tests.conftest import reserve_for_claim
 
 
 def test_cancel_queued_job_is_immediate(client, db_session):
@@ -26,6 +27,7 @@ def test_cancel_terminal_job_returns_409(client, db_session):
 
 def test_cancel_running_job_sets_flag_not_immediate_transition(db_session):
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed = repo.claim(db_session, job.id, worker_id="w1", lease_duration_seconds=30)
     assert claimed is not None
 
@@ -41,6 +43,7 @@ def test_worker_honors_cancel_requested_at_checkpoint(db_session):
     read results in CANCELLED, not SUCCEEDED -- proves the flag is actually
     observed, not just stored inertly in the row."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     claimed = repo.claim(db_session, job.id, worker_id="w1", lease_duration_seconds=30)
     assert claimed is not None
     attempt_number = claimed.attempt_number
@@ -64,6 +67,7 @@ def test_worker_completes_normally_if_cancel_arrives_after_checkpoint(db_session
     (simulated by the worker completing before any cancel call happens), the
     job finishes normally -- this is documented expected behavior, not a bug."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
 
     outcome = process_job_message(db_session, job.id, worker_id="w1")
     assert outcome == "claimed"
@@ -91,6 +95,7 @@ def test_cancel_requested_before_retry_claim_is_honored(db_session):
     )
     db_session.commit()
 
+    reserve_for_claim(db_session, job)
     service.cancel_job(db_session, job.id)  # QUEUED -> CANCELLED (fast path, unaffected by next_retry_at)
 
     # Even if next_retry_at were already due, cancel_requested has flipped
@@ -114,6 +119,7 @@ def test_claim_rejects_retry_not_yet_due(db_session):
         {"t": datetime.now(timezone.utc) + timedelta(seconds=30), "id": str(job.id)},
     )
     db_session.commit()
+    reserve_for_claim(db_session, job)  # isolate: reservation exists, only next_retry_at blocks
 
     claimed = repo.claim(db_session, job.id, worker_id="w1", lease_duration_seconds=30)
 

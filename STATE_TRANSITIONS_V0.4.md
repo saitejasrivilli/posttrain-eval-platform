@@ -26,12 +26,13 @@ A job can be `QUEUED` in three distinguishable (but not separately-status-tracke
 (no reservation)
    |
    v  Scheduler admits (ADR 007)
-created_at set, released_at=NULL
+status=ACTIVE, created_at set, released_at=NULL
    |
    v  job reaches SUCCEEDED/FAILED/CANCELLED, or Recovery marks the attempt LOST
-released_at set (exactly once -- see invariant below)
+status=ACTIVE -> RELEASED (conditional UPDATE, exactly one winner -- see invariant below)
+released_at set
 ```
-A reservation is never "reused" across attempts -- a retried job gets a fresh reservation scoped to its new `attempt_number` when the Scheduler admits it again (ADR 007/RESOURCE_MODEL_V0.4.md).
+`ACTIVE -> RELEASED` is itself a fencing-style conditional transition (`WHERE status='ACTIVE'`), not merely "set a timestamp if it's null" -- this is what gives release its idempotency (DB_SCHEMA_CHANGES_V0.4.md). `capacity.allocated_*` is decremented only by whichever caller's UPDATE actually wins that transition. A reservation is never "reused" across attempts -- a retried job gets a fresh reservation scoped to its new `attempt_number` when the Scheduler admits it again (ADR 007/RESOURCE_MODEL_V0.4.md).
 
 ## Invariants this version adds
 - **No scheduling of cancelled jobs:** the Scheduler's re-verification step (ADR 007) checks `cancel_requested=false` at admission time using the identical condition `claim()` uses -- a job cancelled between being ranked and being reserved simply fails the atomic reservation transaction's re-check (rolled back, no reservation created), same "one atomic statement is the whole enforcement" pattern as everywhere else in this project.

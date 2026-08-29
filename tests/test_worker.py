@@ -9,11 +9,12 @@ from app.repository import jobs as repo
 from app.schemas import JobCreate
 from app.services import jobs as service
 from app.services.worker import SIMULATED_FAILURE_JOB_TYPE, process_job_message
-from tests.conftest import engine
+from tests.conftest import engine, reserve_for_claim
 
 
 def test_worker_executes_job_to_succeeded(db_session):
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
 
     outcome = process_job_message(db_session, job.id, worker_id="w1")
 
@@ -31,6 +32,7 @@ def test_worker_retries_transient_failure_then_succeeds(db_session):
     ADR 005. Second attempt (against a job that no longer simulates failure)
     succeeds."""
     job = service.create_job(db_session, JobCreate(job_type=SIMULATED_FAILURE_JOB_TYPE))
+    reserve_for_claim(db_session, job)
 
     process_job_message(db_session, job.id, worker_id="w1")
 
@@ -43,12 +45,14 @@ def test_worker_retries_transient_failure_then_succeeds(db_session):
     assert first_attempt.error_classification == "transient"
 
     # Force the retry to be due now, then flip job_type so attempt 2 succeeds
-    # (simulating "the transient cause has cleared").
+    # (simulating "the transient cause has cleared"); reserve for attempt 2,
+    # mirroring what the Scheduler would do on a later pass.
     db_session.execute(
         text("UPDATE jobs SET next_retry_at = now(), job_type = 'sft' WHERE id = :id"),
         {"id": str(job.id)},
     )
     db_session.commit()
+    reserve_for_claim(db_session, repo.get(db_session, job.id))
 
     outcome = process_job_message(db_session, job.id, worker_id="w2")
 
@@ -63,6 +67,7 @@ def test_permanent_failure_goes_straight_to_dlq(db_session):
     from app.services.worker import SIMULATE_PERMANENT_FAILURE_JOB_TYPE
 
     job = service.create_job(db_session, JobCreate(job_type=SIMULATE_PERMANENT_FAILURE_JOB_TYPE))
+    reserve_for_claim(db_session, job)
 
     process_job_message(db_session, job.id, worker_id="w1")
 
@@ -81,12 +86,14 @@ def test_max_attempts_exhausted_goes_to_dlq(db_session, monkeypatch):
 
     monkeypatch.setattr(settings, "max_attempts", 2)
     job = service.create_job(db_session, JobCreate(job_type=SIMULATED_FAILURE_JOB_TYPE))
+    reserve_for_claim(db_session, job)
 
     process_job_message(db_session, job.id, worker_id="w1")  # attempt 1 -> retry
     db_session.execute(
         text("UPDATE jobs SET next_retry_at = now() WHERE id = :id"), {"id": str(job.id)}
     )
     db_session.commit()
+    reserve_for_claim(db_session, repo.get(db_session, job.id))
     process_job_message(db_session, job.id, worker_id="w2")  # attempt 2 -> exhausted
 
     final = repo.get(db_session, job.id)
@@ -103,6 +110,7 @@ def test_duplicate_delivery_after_completion_is_a_no_op(db_session):
     message for an already-SUCCEEDED job must not re-execute or create a
     second attempt row."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     process_job_message(db_session, job.id, worker_id="w1")
     first_attempt = attempts_repo.get(db_session, job.id, attempt_number=1)
 
@@ -122,6 +130,7 @@ def test_concurrent_workers_only_one_claims_the_job():
     setup_session = TestSession()
     job = service.create_job(setup_session, JobCreate(job_type="sft"))
     job_id = job.id
+    reserve_for_claim(setup_session, job)
     setup_session.close()
 
     results = []
@@ -152,9 +161,9 @@ def test_concurrent_workers_only_one_claims_the_job():
 
 def test_worker_crash_after_claim_leaves_job_running_until_reclaimed(db_session):
     """V0.2's accepted gap, restated for V0.3: a job stuck RUNNING is not
-    magically recovered by anything OTHER than the Recovery process (ADR 004).
-    Reclamation itself is tested separately in test_recovery.py."""
+    magically recovered by anything OTHER than the Recovery process (ADR 004)."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
 
     claimed = repo.claim(db_session, job.id, worker_id="w-crashed", lease_duration_seconds=30)
     assert claimed is not None

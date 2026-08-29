@@ -4,19 +4,24 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.job import Job, JobStatus
+from app.repository import capacity as capacity_repo
 from app.repository import jobs as repo
+from app.repository import reservations as reservations_repo
 from app.schemas import JobCreate, JobUpdate
 from app.statemachine import sources_for
 
 
 def create_job(db: Session, payload: JobCreate) -> Job:
-    job = Job(job_type=payload.job_type, status=JobStatus.PENDING.value, config=payload.config)
-    # V0.2: job auto-queues immediately on creation (no separate queueing
-    # decision yet -- that's V0.4's scheduler). Insert + transition to QUEUED +
-    # outbox row all happen in the one transaction ADR 002 requires.
-    return repo.create_and_enqueue(
-        db, job, queued_status=JobStatus.QUEUED.value, event_type="job.queued"
+    job = Job(
+        job_type=payload.job_type,
+        status=JobStatus.PENDING.value,
+        config=payload.config,
+        priority=payload.priority,
     )
+    # Job auto-queues immediately on creation. It becomes claimable only once
+    # the Scheduler admits it and dispatches a job.queued event (V0.4 --
+    # see repo.create_and_enqueue's docstring for why dispatch moved here).
+    return repo.create_and_enqueue(db, job, queued_status=JobStatus.QUEUED.value)
 
 
 def get_job(db: Session, job_id: uuid.UUID) -> Job:
@@ -70,7 +75,30 @@ def update_job(db: Session, job_id: uuid.UUID, payload: JobUpdate) -> Job:
 def cancel_job(db: Session, job_id: uuid.UUID) -> Job:
     current = get_job(db, job_id)
     if current.status in (JobStatus.PENDING.value, JobStatus.QUEUED.value):
-        return transition(db, job_id, JobStatus.CANCELLED.value)
+        # V0.4: if this job already had a reservation for its prospective
+        # next attempt (Scheduler admitted it but no worker claimed it yet),
+        # cancelling must release that reservation -- otherwise capacity
+        # leaks for a job that will never run. Same transaction as the status
+        # write (ADR 007/009's release-atomicity discipline).
+        valid_from = sources_for(JobStatus.CANCELLED.value)
+        job = repo.conditional_transition(
+            db, job_id, valid_from, JobStatus.CANCELLED.value, commit=False
+        )
+        if job is None:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "invalid transition",
+                    "from": current.status,
+                    "to": JobStatus.CANCELLED.value,
+                },
+            )
+        released = reservations_repo.release(db, job_id, current.attempt_number + 1)
+        if released is not None:
+            capacity_repo.release(db, released.cpu, released.memory_mb, released.gpu)
+        db.commit()
+        return job
     if current.status == JobStatus.RUNNING.value:
         job = repo.set_cancel_requested(db, job_id)
         if job is None:

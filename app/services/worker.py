@@ -9,9 +9,23 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models.job import JobStatus
 from app.repository import attempts as attempts_repo
+from app.repository import capacity as capacity_repo
 from app.repository import dlq as dlq_repo
 from app.repository import jobs as repo
+from app.repository import reservations as reservations_repo
 from app.retry_policy import PERMANENT, UNKNOWN, compute_next_retry_at, is_retryable
+
+
+def _release_reservation(db, job_id: uuid.UUID, attempt_number: int) -> None:
+    """V0.4: whenever an attempt leaves RUNNING (terminal or requeued for
+    retry), its reservation must be released in the SAME transaction as the
+    job/attempt writes -- otherwise capacity leaks the moment a job finishes
+    (ADR 007/009). release() is itself fencing-conditioned (WHERE status=
+    'ACTIVE'), so calling this defensively even when no reservation exists
+    (e.g. a job created before V0.4 tracked reservations) is a safe no-op."""
+    released = reservations_repo.release(db, job_id, attempt_number)
+    if released is not None:
+        capacity_repo.release(db, released.cpu, released.memory_mb, released.gpu)
 
 SIMULATED_FAILURE_JOB_TYPE = "simulate_failure"  # kept for V0.2 test compatibility -> transient
 SIMULATE_TRANSIENT_FAILURE_JOB_TYPE = "simulate_transient_failure"
@@ -106,15 +120,27 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
     current = repo.get(db, job_id)
     if current is not None and current.cancel_requested:
         finalized = repo.finalize_attempt(
-            db, job_id, worker_id, attempt_number, JobStatus.CANCELLED.value
+            db, job_id, worker_id, attempt_number, JobStatus.CANCELLED.value, commit=False
         )
-        attempts_repo.finalize(db, job_id, attempt_number, JobStatus.CANCELLED.value)
-        return "claimed" if finalized is not None else "fenced_out"
+        attempts_repo.finalize(db, job_id, attempt_number, JobStatus.CANCELLED.value, commit=False)
+        if finalized is not None:
+            _release_reservation(db, job_id, attempt_number)
+            db.commit()
+            return "claimed"
+        db.rollback()
+        return "fenced_out"
 
     if outcome == JobStatus.SUCCEEDED.value:
-        finalized = repo.finalize_attempt(db, job_id, worker_id, attempt_number, JobStatus.SUCCEEDED.value)
-        attempts_repo.finalize(db, job_id, attempt_number, JobStatus.SUCCEEDED.value)
-        return "claimed" if finalized is not None else "fenced_out"
+        finalized = repo.finalize_attempt(
+            db, job_id, worker_id, attempt_number, JobStatus.SUCCEEDED.value, commit=False
+        )
+        attempts_repo.finalize(db, job_id, attempt_number, JobStatus.SUCCEEDED.value, commit=False)
+        if finalized is not None:
+            _release_reservation(db, job_id, attempt_number)
+            db.commit()
+            return "claimed"
+        db.rollback()
+        return "fenced_out"
 
     # outcome == FAILED: classify and decide retry vs permanent-fail vs DLQ.
     classification = classification or UNKNOWN
@@ -124,14 +150,27 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
         )
         finalized = repo.finalize_attempt(
             db, job_id, worker_id, attempt_number, JobStatus.QUEUED.value,
-            extra_values={"next_retry_at": next_retry_at},
+            extra_values={"next_retry_at": next_retry_at}, commit=False,
         )
-        attempts_repo.finalize(db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification)
-        return "claimed" if finalized is not None else "fenced_out"
+        attempts_repo.finalize(
+            db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification, commit=False
+        )
+        if finalized is not None:
+            # This attempt is done (it'll retry as a NEW attempt with its own
+            # fresh reservation once the Scheduler admits it again -- ADR 007).
+            _release_reservation(db, job_id, attempt_number)
+            db.commit()
+            return "claimed"
+        db.rollback()
+        return "fenced_out"
 
     # Permanent, or transient-but-exhausted: terminal FAILED + DLQ.
-    finalized = repo.finalize_attempt(db, job_id, worker_id, attempt_number, JobStatus.FAILED.value)
-    attempts_repo.finalize(db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification)
+    finalized = repo.finalize_attempt(
+        db, job_id, worker_id, attempt_number, JobStatus.FAILED.value, commit=False
+    )
+    attempts_repo.finalize(
+        db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification, commit=False
+    )
     if finalized is not None:
         dlq_repo.insert(
             db, job_id,
@@ -139,6 +178,10 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
             last_error_message=error_message,
             last_error_classification=classification,
             total_attempts=attempt_number,
+            commit=False,
         )
+        _release_reservation(db, job_id, attempt_number)
+        db.commit()
         return "claimed"
+    db.rollback()
     return "fenced_out"

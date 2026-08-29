@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.repository import attempts as attempts_repo
-from app.schemas import AttemptOut, JobCreate, JobList, JobOut, JobUpdate
+from app.repository import scheduling_decisions as decisions_repo
+from app.schemas import AttemptOut, JobCreate, JobList, JobOut, JobUpdate, SchedulingDecisionOut
 from app.services import jobs as service
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
@@ -50,3 +51,9 @@ def cancel_job(job_id: uuid.UUID, db: Session = Depends(get_db)):
 def list_attempts(job_id: uuid.UUID, db: Session = Depends(get_db)):
     service.get_job(db, job_id)  # 404 if job doesn't exist
     return attempts_repo.list_for_job(db, job_id)
+
+
+@router.get("/{job_id}/scheduling-decisions", response_model=list[SchedulingDecisionOut])
+def list_scheduling_decisions(job_id: uuid.UUID, db: Session = Depends(get_db)):
+    service.get_job(db, job_id)  # 404 if job doesn't exist
+    return decisions_repo.list_for_job(db, job_id)

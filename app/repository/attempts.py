@@ -45,6 +45,7 @@ def finalize(
     status: str,
     error_message: str | None = None,
     error_classification: str | None = None,
+    commit: bool = True,
 ) -> Attempt | None:
     attempt = get(db, job_id, attempt_number)
     if attempt is None:
@@ -54,12 +55,17 @@ def finalize(
     attempt.error_message = error_message
     attempt.error_classification = error_classification
     db.add(attempt)
-    db.commit()
-    db.refresh(attempt)
+    if commit:
+        db.commit()
+        db.refresh(attempt)
+    else:
+        db.flush()
     return attempt
 
 
-def mark_lost(db: Session, job_id: uuid.UUID, attempt_number: int, worker_id: str) -> Attempt:
+def mark_lost(
+    db: Session, job_id: uuid.UUID, attempt_number: int, worker_id: str, commit: bool = True
+) -> Attempt:
     """Recovery writes this for the OLD attempt it just fenced out. Distinct
     from finalize() because Recovery may be recording an attempt that never
     had an `attempts` row at all (worker died before even inserting one) --
@@ -85,6 +91,9 @@ def mark_lost(db: Session, job_id: uuid.UUID, attempt_number: int, worker_id: st
         attempt.error_classification = "transient"
         attempt.error_message = "worker_lost: lease expired"
         db.add(attempt)
-    db.commit()
-    db.refresh(attempt)
+    if commit:
+        db.commit()
+        db.refresh(attempt)
+    else:
+        db.flush()
     return attempt

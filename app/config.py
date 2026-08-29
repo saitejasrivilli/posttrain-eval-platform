@@ -20,5 +20,14 @@ class Settings(BaseSettings):
     max_delay_seconds: float = 60
     jitter_ratio: float = 0.2
 
+    # V0.4 -- see ARCHITECTURE_V0.4.md "Config additions"
+    scheduler_poll_interval_ms: int = 1000
+    aging_rate: float = 0.05  # effective-priority points gained per second waited
+    priority_ceiling: int = 100
+    max_admissions_per_pass: int = 50
+    default_cpu: int = 1
+    default_memory_mb: int = 512
+    default_gpu: int = 0
+
 
 settings = Settings()

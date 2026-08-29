@@ -32,6 +32,8 @@ class Job(Base):
     lease_owner = Column(String, nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    # V0.4: plain scalar priority, no named tiers (see RESOURCE_MODEL_V0.4.md).
+    priority = Column(Integer, nullable=False, default=50)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

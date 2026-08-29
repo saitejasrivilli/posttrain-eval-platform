@@ -5,7 +5,9 @@ from sqlalchemy import engine_from_config, pool
 
 from app.config import settings
 from app.db import Base
-from app.models import job, outbox, attempt, dlq  # noqa: F401 -- registers models with Base.metadata
+from app.models import (  # noqa: F401 -- registers models with Base.metadata
+    job, outbox, attempt, dlq, capacity, reservation, scheduling_decision,
+)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

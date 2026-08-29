@@ -14,6 +14,7 @@ def insert(
     last_error_message: str | None,
     last_error_classification: str,
     total_attempts: int,
+    commit: bool = True,
 ) -> DLQEntry:
     entry = DLQEntry(
         job_id=job_id,
@@ -24,8 +25,11 @@ def insert(
         total_attempts=total_attempts,
     )
     db.add(entry)
-    db.commit()
-    db.refresh(entry)
+    if commit:
+        db.commit()
+        db.refresh(entry)
+    else:
+        db.flush()
     return entry
 
 

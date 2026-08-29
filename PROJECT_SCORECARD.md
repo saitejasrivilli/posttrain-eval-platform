@@ -104,30 +104,46 @@ Status: **COMPLETE — v0.3.0**
 - Workflow DAGs
 
 ## V0.4 — Resource-Aware Scheduler
-Status: **DESIGN PHASE** (design docs drafted, awaiting review — no implementation yet)
+Status: **COMPLETE — v0.4.0**
 
-| Gate | Status |
-|---|---|
-| REQUIREMENTS_V0.4.md | Done — pending user review |
-| ARCHITECTURE_V0.4.md (updated HLD) | Done — pending user review |
-| SCHEDULING_POLICY_V0.4.md | Done — pending user review |
-| RESOURCE_MODEL_V0.4.md | Done — pending user review |
-| STATE_TRANSITIONS_V0.4.md | Done — pending user review |
-| ADR 007 (atomic resource reservation) | Done — pending user review |
-| ADR 008 (scheduling policy: priority + bounded aging) | Done — pending user review |
-| ADR 009 (scheduler concurrency safety) | Done — pending user review |
-| DB_SCHEMA_CHANGES_V0.4.md | Done — pending user review |
-| API_CHANGES_V0.4.md | Done — pending user review |
-| FAILURE_SCENARIOS_V0.4.md | Done — pending user review |
-| Implementation | Not started |
-| Concurrent-scheduler / no-overcommit test | Not started (release-blocking, same tier as V0.3's split-brain test) |
-| Starvation-prevention test (measured, not estimated) | Not started |
-| Unit/integration tests | Not started |
-| Clean-room Docker verification (multi-scheduler) | Not started |
-| Tag v0.4.0 | Not started |
+| Capability | Status | Evidence |
+|---|---|---|
+| Resource model (CPU/memory/GPU request + aggregate cluster capacity) | Done | `app/models/capacity.py`, `RESOURCE_MODEL_V0.4.md` (deliberate aggregate-pool-only simplification, no per-node placement) |
+| Atomic resource reservation | Done | `app/repository/capacity.py::try_reserve` — single conditional UPDATE, check-and-act in one statement (ADR 007), same primitive as V0.2/V0.3's fencing UPDATEs; `tests/test_scheduler.py::test_admits_when_capacity_available` |
+| No over-allocation under concurrent schedulers | Done | `tests/test_scheduler.py::test_no_overcommit_under_concurrent_schedulers` (5 threads, 10 GPUs requested vs 8 available, allocated never exceeds total) |
+| Resource conservation invariant (`allocated == sum(active reservations)`) | Done | Same test + `test_release_idempotency_and_conservation_invariant` |
+| Reservation identity `(job_id, attempt_number)`, never reused across retries | Done | `app/models/reservation.py`; `tests/test_scheduler_integration.py::test_worker_retry_releases_old_reservation_new_attempt_needs_new_one` |
+| Idempotent release (ACTIVE→RELEASED conditional transition) | Done | `app/repository/reservations.py::release`; `tests/test_scheduler.py::test_release_idempotency_and_conservation_invariant` (double-release proven not to double-decrement) |
+| Release on every terminal path: SUCCEEDED/FAILED/CANCELLED/LOST | Done | `tests/test_scheduler_integration.py::test_worker_success_releases_reservation`, `test_worker_retry_releases_old_reservation...` (FAILED), `test_cancel_releases_reservation_for_unclaimed_job` (CANCELLED), `test_recovery_releases_reservation_atomically_with_marking_lost` (LOST) |
+| Priority + bounded aging (starvation prevention) | Done | `app/services/scheduler.py::_effective_priority` (ADR 008, chosen over weighted-fair-scheduling — no tenant model exists yet); `tests/test_scheduler.py::test_effective_priority_aging_lets_low_priority_eventually_rank_above_high_priority`, `test_effective_priority_never_exceeds_ceiling`; live: 10-job/4-GPU demo admitted strictly by priority |
+| Admission control: cancelled / retry-not-due jobs never admitted | Done | `app/repository/jobs.py::list_schedulable`; `tests/test_scheduler_integration.py::test_scheduler_never_admits_cancelled_job`, `test_scheduler_never_admits_retry_not_yet_due` |
+| `insufficient_*` vs `exceeds_total_cluster_capacity` distinction | Done | `app/repository/capacity.py::which_dimension_insufficient`; `tests/test_scheduler.py::test_exceeds_total_capacity_reason_is_distinct`, `test_insufficient_vs_exceeds_capacity_distinction` |
+| Worker claim requires a valid reservation (hard invariant, scheduler cannot be bypassed) | Done | `app/repository/jobs.py::claim` (`EXISTS` subquery scoped to `attempt_number = Job.attempt_number+1 AND status='ACTIVE'`); `tests/test_scheduler_integration.py::test_claim_requires_a_valid_reservation_hard_invariant` |
+| Scheduler concurrency (multiple schedulers, no coordination needed) | Done | Same conditional-UPDATE mechanism proven for capacity in the no-overcommit test (ADR 009 — no distributed lock, no leader election) |
+| Scheduler crash durability (reservation + outbox survive, no stranding) | Done | `tests/test_scheduler_dispatch_boundary.py::test_reservation_and_outbox_survive_a_simulated_scheduler_crash` |
+| Dispatch boundary: durable outbox insert, never a synchronous Kafka call inside the reservation transaction | Done | `tests/test_scheduler_dispatch_boundary.py::test_admission_never_calls_kafka_directly` (structural) + same crash-survival test (behavioral) |
+| Recovery↔reservation integration (release atomic with marking LOST) | Done | `app/services/recovery.py::reclaim_stale_leases` (single transaction: reclaim + mark LOST + release reservation); `tests/test_scheduler_integration.py::test_recovery_releases_reservation_atomically_with_marking_lost` |
+| Clean migration | Done | 12/12 migrations (`0001`-`0012`) applied from scratch, this session, locally and in the Docker image |
+| Live multi-container verification | Done | Real `docker compose` stack (api/worker/outbox-relay/recovery/scheduler/Redpanda/Postgres): 10 jobs × 1 GPU request vs 4-GPU cluster capacity — all admitted strictly by priority, executed, capacity settled back to 0 with zero leaks |
+| Unit/integration tests | Done | 70/70 passing, all against real Postgres |
+
+**Release note (v0.4.0):** Resource accounting is enforced by the same single-conditional-UPDATE primitive this project has trusted since V0.2 (check-and-act as one statement, never check-then-act) — applied to a `capacity` row instead of a `jobs` row. A real defect was caught during live verification, not by unit tests: job creation originally dispatched its `job.queued` Kafka event immediately (V0.2 behavior), before any reservation could exist — a fast worker's claim was correctly rejected but the Kafka offset advanced with no redelivery, permanently stranding admitted-but-never-claimed jobs. Fixed by moving dispatch from job-creation time to admission time: the Scheduler now writes the outbox row in the same transaction as the reservation (mirroring Recovery's existing retry-dispatch pattern), never a synchronous Kafka call. This claim is directly evidence-backed, not asserted: `test_admission_never_calls_kafka_directly` proves no Kafka reference exists in the scheduler module; `test_reservation_and_outbox_survive_a_simulated_scheduler_crash` proves a crashed Scheduler never strands a job, because a wholly separate, uncoordinated Outbox Relay process can independently discover and publish the durable row. No exactly-once claims, no per-node/Kubernetes/Ray/Slurm claims anywhere in V0.4 documentation.
+
+## Architectural debt (tracked, not fixed now)
+- `app/repository/outbox.py::insert_event` performs its own internal `db.commit()`, which is what actually closes the reservation+outbox transaction in `app/services/scheduler.py::try_admit` — correct today (nothing commits before it), but implicit rather than an explicit transaction boundary the caller controls. Revisit when this code is next refactored: prefer an explicit `with db.begin():`-style boundary so a future added repository call can't accidentally commit early or split a transaction that must stay atomic.
+
+## Explicitly deferred (not implemented, not claimed) — updated for V0.4
+- Kubernetes, Ray, Slurm, Redis
+- Per-node placement / bin-packing / GPU topology awareness
+- Multi-tenant quotas, weighted-fair-scheduling (ADR 008 — revisit once a real tenant concept exists)
+- Preemption of running jobs
+- Autoscaling
+- Reservation-expiry timers (ADR 009 — unclaimed-but-reserved is a worker-capacity problem, not solved by a timeout)
+- DLQ redrive/reprocessing tooling
+- Authentication / authorization
 
 ## Future versions (not started)
-V0.5 ML lifecycle, V0.6 post-training, V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
+V0.5 ML lifecycle (dataset/model/artifact lineage), V0.6 post-training (SFT/DPO/GRPO), V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
 
 ## Rule
 No row marked "Done" without a corresponding artifact (test output, CI run link, or doc file) — no self-certified checkmarks.

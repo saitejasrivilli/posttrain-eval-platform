@@ -14,6 +14,7 @@ from app.services import jobs as service
 from app.services import worker as worker_module
 from app.services.recovery import reclaim_stale_leases
 from app.services.worker import process_job_message
+from tests.conftest import reserve_for_claim
 
 
 def _expire_lease(db_session, job_id):
@@ -27,6 +28,7 @@ def _expire_lease(db_session, job_id):
 def test_split_brain_stale_failed_write_rejected(db_session):
     """Stale worker's FAILED write (not just SUCCESS) must be fenced too."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     repo.claim(db_session, job.id, "worker-A", lease_duration_seconds=30)
     _expire_lease(db_session, job.id)
     reclaim_stale_leases(db_session)  # fences worker-A (status no longer RUNNING)
@@ -42,6 +44,7 @@ def test_split_brain_stale_retry_requeue_write_rejected(db_session):
     """Stale worker's retry/requeue write (RUNNING -> QUEUED) must be fenced
     too -- a fenced-out worker must not be able to re-queue a job either."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     repo.claim(db_session, job.id, "worker-A", lease_duration_seconds=30)
     _expire_lease(db_session, job.id)
     reclaim_stale_leases(db_session)
@@ -59,6 +62,7 @@ def test_recovery_does_not_resurrect_a_cancelled_job(db_session):
     job while it's RUNNING, Recovery reclaims. Must land on CANCELLED, never
     QUEUED -- a cancelled-but-orphaned job must not re-enter the retry cycle."""
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
     repo.claim(db_session, job.id, "worker-A", lease_duration_seconds=30)
 
     service.cancel_job(db_session, job.id)  # sets cancel_requested=true while RUNNING
@@ -91,6 +95,7 @@ def test_unknown_classification_is_bounded_not_infinite_retry(db_session, monkey
 
     monkeypatch.setattr(worker_module, "_run_executor", fake_unknown_failure)
     job = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job)
 
     process_job_message(db_session, job.id, worker_id="w1")  # attempt 1 -> retry (unknown, bounded)
     after_1 = repo.get(db_session, job.id)
@@ -100,6 +105,7 @@ def test_unknown_classification_is_bounded_not_infinite_retry(db_session, monkey
 
     db_session.execute(text("UPDATE jobs SET next_retry_at = now() WHERE id = :id"), {"id": str(job.id)})
     db_session.commit()
+    reserve_for_claim(db_session, repo.get(db_session, job.id))
     process_job_message(db_session, job.id, worker_id="w2")  # attempt 2 -> exhausted -> DLQ, not another retry
 
     final = repo.get(db_session, job.id)
@@ -118,6 +124,8 @@ def test_recovery_crash_mid_cycle_leaves_other_stale_job_untouched_and_reclaimab
     partial state, no corruption, per FAILURE_SCENARIOS_V0.3.md #15."""
     job_x = service.create_job(db_session, JobCreate(job_type="sft"))
     job_y = service.create_job(db_session, JobCreate(job_type="sft"))
+    reserve_for_claim(db_session, job_x)
+    reserve_for_claim(db_session, job_y)
     repo.claim(db_session, job_x.id, "w1", lease_duration_seconds=30)
     repo.claim(db_session, job_y.id, "w2", lease_duration_seconds=30)
     _expire_lease(db_session, job_x.id)

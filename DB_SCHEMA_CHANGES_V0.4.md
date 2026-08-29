@@ -28,11 +28,25 @@ attempt_number  INTEGER NOT NULL
 cpu             INTEGER NOT NULL
 memory_mb       INTEGER NOT NULL
 gpu             INTEGER NOT NULL
+status          TEXT NOT NULL DEFAULT 'ACTIVE'   -- ACTIVE | RELEASED
 created_at      TIMESTAMPTZ NOT NULL
 released_at     TIMESTAMPTZ NULL
 PRIMARY KEY (job_id, attempt_number)
 ```
-Composite PK mirrors `attempts` (ADR 006's precedent) -- one reservation per attempt, never reused across retries. Partial index `(released_at) WHERE released_at IS NULL` for the "does this job have a live reservation" check `claim()` performs.
+Composite PK mirrors `attempts` (ADR 006's precedent) -- one reservation per attempt, never reused across retries.
+
+**Release idempotency (required clarification B):** release is a conditional UPDATE `WHERE status='ACTIVE'` setting `status='RELEASED', released_at=now()` -- the *same* single-conditional-UPDATE primitive used everywhere else in this project (ADR 007). The first release call affects 1 row; any subsequent release attempt for the same `(job_id, attempt_number)` -- whether from a worker's normal finalize, a racing Recovery reclaim, or a duplicate call from either -- affects 0 rows and is a safe no-op, exactly like V0.3's fencing-conditioned writes. `capacity.allocated_*` is decremented **only** inside the branch where this UPDATE's rowcount is 1 -- never decremented speculatively, never decremented by a caller that didn't itself win the `ACTIVE -> RELEASED` transition. This is what prevents a double-release from double-decrementing capacity (scenario 7, FAILURE_SCENARIOS_V0.4.md).
+
+Partial index `(status) WHERE status='ACTIVE'` for the "does this job have a live reservation" check `claim()` performs, and for computing the resource-conservation invariant below.
+
+**Resource conservation invariant (required, tested continuously, not just at reservation time):**
+```
+capacity.allocated_cpu    = SUM(cpu)    FROM reservations WHERE status='ACTIVE'
+capacity.allocated_memory_mb = SUM(memory_mb) FROM reservations WHERE status='ACTIVE'
+capacity.allocated_gpu    = SUM(gpu)    FROM reservations WHERE status='ACTIVE'
+0 <= allocated_* <= total_*   (always, every resource dimension)
+```
+This must hold after every reservation, release, and recovery-reclaim operation -- not just "eventually consistent" but true at every commit boundary, because `allocated_*` is never computed by re-summing `reservations` at read time; it's maintained incrementally by the same transaction that flips a reservation's status. The invariant is what a test asserts to *verify* that incremental maintenance never drifted from the sum-of-active-reservations ground truth (see FAILURE_SCENARIOS_V0.4.md's new conservation-invariant test).
 
 ## `scheduling_decisions` table (new)
 ```
