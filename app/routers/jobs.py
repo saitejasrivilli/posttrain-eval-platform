@@ -38,3 +38,8 @@ def update_job(job_id: uuid.UUID, payload: JobUpdate, db: Session = Depends(get_
 @router.delete("/{job_id}", status_code=204)
 def delete_job(job_id: uuid.UUID, db: Session = Depends(get_db)):
     service.delete_job(db, job_id)
+
+
+@router.post("/{job_id}/cancel", response_model=JobOut)
+def cancel_job(job_id: uuid.UUID, db: Session = Depends(get_db)):
+    return service.cancel_job(db, job_id)

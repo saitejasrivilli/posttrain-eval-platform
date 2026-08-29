@@ -20,6 +20,8 @@ class JobOut(BaseModel):
     job_type: str
     status: str
     config: Optional[dict[str, Any]] = None
+    cancel_requested: bool = False
+    claimed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

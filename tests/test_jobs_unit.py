@@ -8,18 +8,20 @@ from app.schemas import JobCreate
 from app.services import jobs as service
 
 
-def test_create_job_defaults_to_pending(monkeypatch):
+def test_create_job_auto_queues(monkeypatch):
     captured = {}
 
-    def fake_insert(db, job):
+    def fake_create_and_enqueue(db, job, queued_status, event_type):
         captured["job"] = job
+        job.status = queued_status
         return job
 
-    monkeypatch.setattr(service.repo, "insert", fake_insert)
+    monkeypatch.setattr(service.repo, "create_and_enqueue", fake_create_and_enqueue)
 
     result = service.create_job(db=None, payload=JobCreate(job_type="sft"))
 
-    assert result.status == JobStatus.PENDING.value
+    # V0.2: job auto-queues immediately on creation (see ARCHITECTURE_V0.2.md).
+    assert result.status == JobStatus.QUEUED.value
     assert captured["job"].job_type == "sft"
 
 

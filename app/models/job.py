@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Column, String, DateTime, JSON, func
+from sqlalchemy import Boolean, Column, String, DateTime, JSON, func
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db import Base
@@ -23,6 +23,8 @@ class Job(Base):
     job_type = Column(String, nullable=False)
     status = Column(String, nullable=False, default=JobStatus.PENDING.value)
     config = Column(JSON, nullable=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

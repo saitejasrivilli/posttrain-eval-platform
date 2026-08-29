@@ -3,7 +3,7 @@ def test_full_job_lifecycle(client):
     assert create_resp.status_code == 201
     body = create_resp.json()
     job_id = body["id"]
-    assert body["status"] == "PENDING"
+    assert body["status"] == "QUEUED"  # V0.2: job auto-queues on creation
     assert body["job_type"] == "sft"
 
     get_resp = client.get(f"/v1/jobs/{job_id}")
@@ -16,9 +16,9 @@ def test_full_job_lifecycle(client):
     assert list_body["total"] == 1
     assert list_body["items"][0]["id"] == job_id
 
-    patch_resp = client.patch(f"/v1/jobs/{job_id}", json={"status": "QUEUED"})
+    patch_resp = client.patch(f"/v1/jobs/{job_id}", json={"status": "CANCELLED"})
     assert patch_resp.status_code == 200
-    assert patch_resp.json()["status"] == "QUEUED"
+    assert patch_resp.json()["status"] == "CANCELLED"
 
     delete_resp = client.delete(f"/v1/jobs/{job_id}")
     assert delete_resp.status_code == 204
