@@ -7,6 +7,14 @@ from app.models import job as _job  # noqa: F401 -- registers Job so Outbox's FK
 from app.models.outbox import Outbox
 
 
+def insert_event(db: Session, job_id: uuid.UUID, event_type: str) -> Outbox:
+    row = Outbox(job_id=job_id, event_type=event_type, payload={"job_id": str(job_id)})
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def list_unpublished(db: Session, limit: int = 100) -> list[Outbox]:
     return (
         db.query(Outbox)

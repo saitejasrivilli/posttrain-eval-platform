@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, update as sa_update
+from sqlalchemy import case, func, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.models.job import Job
@@ -73,6 +73,167 @@ def set_cancel_requested(db: Session, job_id: uuid.UUID) -> Job | None:
     if result.rowcount == 0:
         return None
     return get(db, job_id)
+
+
+def claim(db: Session, job_id: uuid.UUID, worker_id: str, lease_duration_seconds: int) -> Job | None:
+    """Atomic claim: QUEUED -> RUNNING, incrementing attempt_number (the
+    fencing token, ADR 004). Fails to match (returns None) if the job is not
+    QUEUED, has cancel_requested=true, or its next_retry_at backoff hasn't
+    elapsed yet -- all three are enforced as one WHERE clause, per
+    ARCHITECTURE_V0.3.md's "claim/reclaim precondition" list."""
+    now = datetime.now(timezone.utc)
+    stmt = (
+        sa_update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == "QUEUED",
+            Job.cancel_requested.is_(False),
+            (Job.next_retry_at.is_(None)) | (Job.next_retry_at <= now),
+            Job.deleted_at.is_(None),
+        )
+        .values(
+            status="RUNNING",
+            lease_owner=worker_id,
+            lease_expires_at=now + timedelta(seconds=lease_duration_seconds),
+            attempt_number=Job.attempt_number + 1,
+            claimed_at=now,
+            next_retry_at=None,
+        )
+    )
+    result = db.execute(stmt)
+    db.commit()
+    if result.rowcount == 0:
+        return None
+    return get(db, job_id)
+
+
+def heartbeat(
+    db: Session, job_id: uuid.UUID, worker_id: str, attempt_number: int, lease_duration_seconds: int
+) -> bool:
+    """Renew the lease. Fencing-conditioned: succeeds only if this worker still
+    holds this exact attempt_number. rowcount 0 means this worker has been
+    fenced out and must abandon the attempt (ADR 004)."""
+    stmt = (
+        sa_update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == "RUNNING",
+            Job.lease_owner == worker_id,
+            Job.attempt_number == attempt_number,
+        )
+        .values(lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=lease_duration_seconds))
+    )
+    result = db.execute(stmt)
+    db.commit()
+    return result.rowcount > 0
+
+
+def finalize_attempt(
+    db: Session,
+    job_id: uuid.UUID,
+    worker_id: str,
+    attempt_number: int,
+    to_status: str,
+    extra_values: dict | None = None,
+) -> Job | None:
+    """Fencing-conditioned terminal write for an attempt: SUCCEEDED, FAILED,
+    CANCELLED, or QUEUED-for-retry. Succeeds only if this worker still holds
+    this exact attempt_number -- exactly the same check as heartbeat(), reused
+    rather than reinvented (ADR 004). rowcount 0 means the caller's result is
+    stale and MUST be discarded, never retried."""
+    values = {"status": to_status, "lease_owner": None, "lease_expires_at": None}
+    if extra_values:
+        values.update(extra_values)
+    stmt = (
+        sa_update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == "RUNNING",
+            Job.lease_owner == worker_id,
+            Job.attempt_number == attempt_number,
+        )
+        .values(**values)
+    )
+    result = db.execute(stmt)
+    db.commit()
+    if result.rowcount == 0:
+        return None
+    return get(db, job_id)
+
+
+def list_stale_leases(db: Session) -> list[Job]:
+    now = datetime.now(timezone.utc)
+    return (
+        db.query(Job)
+        .filter(Job.status == "RUNNING", Job.lease_expires_at < now, Job.deleted_at.is_(None))
+        .all()
+    )
+
+
+def reclaim_stale(
+    db: Session, job_id: uuid.UUID, max_attempts: int, computed_next_retry_at: datetime
+) -> tuple[int, str] | None:
+    """Recovery process's atomic reclaim (ADR 004). Fences out the old owner
+    by moving status away from RUNNING -- the heartbeat/finalize fencing
+    checks both require `status='RUNNING'`, so this alone invalidates every
+    future write the old worker makes; attempt_number is NOT incremented here
+    (that would create a numbering gap, since claim() is the only place a
+    NEW attempt actually starts running -- see the note this fix added after
+    catching the gap during implementation). Branches, in the SAME statement,
+    on cancel_requested / MAX_ATTEMPTS to decide the resulting status:
+    CANCELLED, FAILED (attempts exhausted), or QUEUED (retry scheduled).
+    Returns (attempt_number, new_status) or None if another process already
+    reclaimed this job first (or its lease was renewed in time)."""
+    now = datetime.now(timezone.utc)
+    new_status = case(
+        (Job.cancel_requested.is_(True), "CANCELLED"),
+        (Job.attempt_number >= max_attempts, "FAILED"),
+        else_="QUEUED",
+    )
+    new_next_retry_at = case(
+        (Job.cancel_requested.is_(True), None),
+        (Job.attempt_number >= max_attempts, None),
+        else_=computed_next_retry_at,
+    )
+    stmt = (
+        sa_update(Job)
+        .where(Job.id == job_id, Job.status == "RUNNING", Job.lease_expires_at < now)
+        .values(
+            lease_owner=None,
+            lease_expires_at=None,
+            status=new_status,
+            next_retry_at=new_next_retry_at,
+        )
+        .returning(Job.attempt_number, Job.status)
+    )
+    result = db.execute(stmt)
+    row = result.first()
+    db.commit()
+    if row is None:
+        return None
+    attempt_number, resulting_status = row
+    return attempt_number, resulting_status
+
+
+def list_retry_due(db: Session) -> list[Job]:
+    now = datetime.now(timezone.utc)
+    return (
+        db.query(Job)
+        .filter(
+            Job.status == "QUEUED",
+            Job.next_retry_at.isnot(None),
+            Job.next_retry_at <= now,
+            Job.deleted_at.is_(None),
+        )
+        .all()
+    )
+
+
+def clear_retry_dispatched(db: Session, job_id: uuid.UUID) -> None:
+    """Marks a retry as dispatched so the same due job isn't re-emitted every
+    Recovery poll cycle. Called in the same transaction as the outbox insert."""
+    stmt = sa_update(Job).where(Job.id == job_id).values(next_retry_at=None)
+    db.execute(stmt)
 
 
 def get(db: Session, job_id: uuid.UUID) -> Job | None:

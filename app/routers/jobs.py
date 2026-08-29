@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.schemas import JobCreate, JobList, JobOut, JobUpdate
+from app.repository import attempts as attempts_repo
+from app.schemas import AttemptOut, JobCreate, JobList, JobOut, JobUpdate
 from app.services import jobs as service
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
@@ -43,3 +44,9 @@ def delete_job(job_id: uuid.UUID, db: Session = Depends(get_db)):
 @router.post("/{job_id}/cancel", response_model=JobOut)
 def cancel_job(job_id: uuid.UUID, db: Session = Depends(get_db)):
     return service.cancel_job(db, job_id)
+
+
+@router.get("/{job_id}/attempts", response_model=list[AttemptOut])
+def list_attempts(job_id: uuid.UUID, db: Session = Depends(get_db)):
+    service.get_job(db, job_id)  # 404 if job doesn't exist
+    return attempts_repo.list_for_job(db, job_id)

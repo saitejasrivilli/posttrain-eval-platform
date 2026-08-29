@@ -11,7 +11,7 @@ os.environ.setdefault(
 
 from app.db import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import job, outbox, execution  # noqa: F401,E402
+from app.models import job, outbox, attempt, dlq  # noqa: F401,E402
 
 engine = create_engine(os.environ["DATABASE_URL"])
 TestSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -28,7 +28,7 @@ def _create_schema():
 def _clean_table():
     yield
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE jobs, outbox, executions CASCADE"))
+        conn.execute(text("TRUNCATE TABLE jobs, outbox, attempts, dlq CASCADE"))
 
 
 @pytest.fixture()
