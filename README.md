@@ -3,6 +3,44 @@
 A production-style ML execution platform built incrementally from durable
 job execution to real GPU training and crash-resilient checkpoint recovery.
 
+## V0.8 — Hardening (CI, metrics, load test, recovery demo)
+
+V0.8 is a hardening release — no new domain functionality. It closes the gap
+where every "clean-room Docker verified" claim for V0.1–V0.7 had been done by
+hand in a chat session and never automated.
+
+- **Automated clean-room CI gate.** A second CI job (`docker-e2e` in
+  `.github/workflows/ci.yml`) stands up the full multi-process stack
+  (api/worker/scheduler/recovery/outbox-relay/reconciler + Kafka/MinIO/Postgres)
+  from an empty volume, confirms migrations reach head (`0023`), and runs a
+  scripted end-to-end smoke flow (`scripts/smoke_test.sh`) on every push — then
+  tears everything down with `docker compose down -v`. Verified green:
+  [Actions run 33317017794](https://github.com/saitejasrivilli/posttrain-eval-platform/actions/runs/33317017794).
+  This automates *going forward* what was previously hand-run; it does not
+  retroactively automate the old manual verifications.
+- **Real operational metrics.** `GET /metrics` exposes Prometheus-format
+  operational metrics (job lifecycle counters, queue/capacity/outbox gauges,
+  and execution/recovery/evaluation duration histograms). They are derived from
+  authoritative Postgres state at scrape time, so they are correct across all
+  containers rather than siloed per-process — every value traces to a row a
+  real code path wrote. See `app/metrics.py`.
+- **One reproducible load test.** `scripts/load_test.py` submits 100 jobs across
+  10 concurrent submitters against the live stack. Real measured output in
+  `benchmark/results/v0.8_load_test.json`: 100/100 succeeded, ~15 jobs/s,
+  queue-wait p50 2.75s / p95 6.29s, retry rate 0.0, and allocated capacity
+  returns to zero (resource-conservation invariant held).
+- **Scripted recovery demo.** `scripts/demo_checkpoint_recovery.sh` reproduces
+  the checkpoint-10 → `docker kill` → recover → step-20 flow against the real
+  stack; the real captured transcript is in
+  [`docs/demo_transcript.txt`](docs/demo_transcript.txt). **A human still needs
+  to screen-record this run for a demo video — no video is produced or claimed
+  by this repo.**
+
+131/131 tests passing (129 pre-existing + 2 new metrics tests; no existing test
+weakened). One real defect was found and fixed while building the repeatable
+smoke test (checkpoint artifact dedup collision under identical hyperparameters).
+See `PROJECT_SCORECARD.md` → "V0.8 — Hardening" for the full evidence table.
+
 ## V0.7 — Evaluation + Quality Gates
 
 V0.7 adds an evaluation control plane on top of the existing pipeline:

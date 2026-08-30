@@ -262,6 +262,58 @@ This implementation was carried out in this session by a background agent that s
 - Real GPU-based evaluation. V0.7 evaluation execution is currently validated with the deterministic CPU toy evaluator (`app/evaluation/toy_evaluator.py`) only — real GPU evaluation is not claimed anywhere in V0.7. This is distinct from V0.6, which separately validated real CUDA training on a Tesla T4 via Colab (`V0.6_GPU_VALIDATION.md`); V0.7 has no analogous real-GPU evaluation run. A real evaluator would reuse the same `run(context, report)` interface behind a real evaluator body, following the same pattern V0.6 used for training, but that validation has not been performed.
 - Workflow/orchestration engine tying training → evaluation → promotion together automatically
 
+## V0.8 — Hardening (infrastructure, no new domain functionality)
+
+**Scope note:** V0.8 is explicitly a *hardening* release, not a feature release.
+It adds no new domain capability (no Kubernetes/Ray/Spark, no multi-region, no
+distributed training, no model-promotion workflow — those remain deferred). It
+hardens the existing system along four axes: automated clean-room CI, real
+operational metrics, one reproducible load test, and a scripted recovery demo.
+It also does **not** retroactively automate the OLD "manually verified"
+clean-room/live-E2E runs claimed for V0.1–V0.7 — those were and remain
+hand-verified in prior sessions; V0.8 only ensures that *going forward* the same
+clean-room + live-E2E flow runs automatically in CI on every push.
+
+| Capability | Status | Evidence |
+| --- | --- | --- |
+| Second CI job runs the REAL multi-process docker-compose stack from an empty volume (not just a Postgres service container) | Done | `.github/workflows/ci.yml` job `docker-e2e`: `docker compose up --build -d` (api/worker/scheduler/recovery/outbox-relay/reconciler + Kafka/MinIO/Postgres), waits for `/readyz`, tears down with `down -v` always. **Verified green:** GitHub Actions run [33317017794](https://github.com/saitejasrivilli/posttrain-eval-platform/actions/runs/33317017794) (`docker-e2e` 53s + `test` 1m7s both ✓); also run 33317102828 ✓ |
+| CI confirms migrations applied to head (0023) from an empty volume | Done | `docker-e2e` step "Confirm migrations applied to head (0023)" greps api logs for `Running upgrade 0022 -> 0023`; passes in run 33317017794 |
+| CI runs a real scripted end-to-end smoke flow (curl against the live stack), turning the by-hand V0.6/V0.7 verification into a repeatable gate | Done | `scripts/smoke_test.sh` (dataset → dataset version → training run → SUCCEEDED → register model version → eval-config → evaluation → SUCCEEDED → results/metrics → quality-gate PASS → `/metrics` non-zero assertions). Runnable locally and invoked by CI job `docker-e2e`; green in run 33317017794 |
+| `GET /metrics` in Prometheus text exposition format | Done | `app/routers/metrics.py`, `app/metrics.py`; `tests/test_metrics.py::test_metrics_endpoint_exposes_prometheus_format` asserts all required metric families present; live: `curl localhost:8000/metrics` returns real values against the running stack |
+| Metrics reflect REAL counts, not fabricated values | Done | Metrics are derived from authoritative Postgres state at scrape time (see design note below). `tests/test_metrics.py::test_jobs_completed_counter_increments_after_real_job` runs a real job through the real worker code path and asserts `jobs_completed_total{job_type=...}` incremented by exactly 1 and the execution histogram observed a real sample; live: smoke test asserts `jobs_created_total`/`jobs_completed_total`/`evaluation_runs_total`/`job_execution_seconds_count` are non-zero after a real flow |
+| Required metric families: jobs_created/completed/failed/retried, queue_depth, execution/recovery histograms, scheduler reservations/capacity, worker_active_jobs, outbox_pending, evaluation runs/failures/duration, checkpoint created/resume | Done | `app/metrics.py` `_PlatformCollector`; each family maps to a real table a real code path writes (jobs, attempts, reservations, capacity, outbox, evaluation_runs, checkpoints, attempt_resume_decisions) |
+| One reproducible load test with real measured numbers | Done | `scripts/load_test.py` (100 jobs / 10 concurrent submitters against the live stack). Real captured output in `benchmark/results/v0.8_load_test.json`: 100/100 succeeded, throughput **15.14 jobs/s**, queue-wait p50 **2.75s** / p95 **6.29s**, execution p50 **2.45ms** / p95 **6.8ms**, retry rate **0.0** |
+| Resource-conservation invariant holds under load | Done | `scripts/load_test.py` reads `capacity` before/after and asserts allocated returns to `(0,0,0)`; `benchmark/results/v0.8_load_test.json` `resource_conservation.returns_to_zero = true` for the real 100-job run |
+| Scripted checkpoint-recovery demo against the live stack (checkpoint-10 → kill → recover → step-20) | Done | `scripts/demo_checkpoint_recovery.sh` + real captured `docs/demo_transcript.txt`: attempt 1 registered checkpoint-10 then real `docker kill`; lease expired; Recovery reclaimed (attempt 1 → LOST `worker_lost: lease expired`); attempt 2 resumed from checkpoint-10 and completed to step 20 → SUCCEEDED (final output produced by attempt 2). Video is NOT produced — a human must screen-record; the script/transcript are the reproducible proof |
+| Regression safety (V0.1–V0.7 behavior unmodified) | Done | Full suite **131/131** passing (129 pre-existing + 2 new metrics tests); no existing test modified, weakened, or deleted |
+| Defect found + fixed during hardening: checkpoint artifact dedup collision | Done | Building the repeatable smoke test surfaced a real latent bug: the toy trainer's checkpoint/final bytes were a pure function of hyperparameters, so two runs with identical config produced byte-identical artifacts that deduped (content-addressed) to one `artifact_id` and violated the `checkpoints_artifact_id` UNIQUE constraint — every training job after the first FAILED. Fixed by stamping run/attempt identity into saved artifacts (same nonce pattern the eval tests already use). Covered by existing `tests/test_training_execution.py` + proven by two consecutive green smoke runs |
+
+**Design decision — metrics are DB-derived, deliberately.** This platform runs
+as many independent containers. A per-process `prometheus_client.Counter`
+incremented inside `worker.py` would live only in the worker container's memory
+and would never appear on the api container's `/metrics` endpoint — a siloed,
+misleading number. Instead every metric is computed from the authoritative
+Postgres state (which every process already writes to) at scrape time. This is
+correct across the whole cluster by construction and cannot drift from real
+system state; counters are monotonic because they count cumulative rows. This is
+an honest engineering choice, documented in `app/metrics.py`, not a fabrication —
+every value traces to a row a real code path wrote. The three duration
+histograms (`job_execution_seconds`, `job_recovery_seconds`,
+`evaluation_duration_seconds`) are built from real persisted timestamps
+(`attempts.started_at/finished_at`, `evaluation_runs.created_at/completed_at`);
+`job_recovery_seconds` uses the LOST-attempt outstanding interval as its honest
+proxy, documented as such.
+
+**Release note (V0.8 hardening, no tag):** This is a hardening pass only. The
+headline is that the "clean-room Docker verified" claim — hand-run for seven
+prior versions — is now an automated CI gate (`docker-e2e`) that stands up the
+full stack from an empty volume and runs a scripted end-to-end flow on every
+push. `/metrics` exposes real, DB-derived operational metrics. One reproducible
+load test and one scripted recovery demo were run for real, with their actual
+output committed (`benchmark/results/v0.8_load_test.json`, `docs/demo_transcript.txt`).
+No release is tagged. A human still needs to screen-record the demo for any
+video artifact.
+
 ## Future versions (not started)
 V0.8 release/promotion mgmt, V0.9 observability, V1.0 production simulation.
 
