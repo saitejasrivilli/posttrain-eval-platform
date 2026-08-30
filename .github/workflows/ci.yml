@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v0.8-hardening]
   pull_request:
     branches: [main]
 
@@ -42,3 +42,49 @@ jobs:
 
       - name: Run tests
         run: pytest --cov=app --cov-report=term-missing
+
+  # V0.8 hardening: a REAL clean-room Docker gate. Prior versions' "clean-room
+  # Docker verified" claims were done by hand in a chat session and never
+  # automated -- this job automates them. It stands up the full multi-process
+  # stack (api/worker/scheduler/recovery/outbox-relay/reconciler + Kafka/MinIO/
+  # Postgres) from an empty volume, confirms migrations applied, and runs the
+  # scripted end-to-end smoke flow (scripts/smoke_test.sh) that a human can
+  # also run locally. Slower than the unit job by design, but a real gate.
+  docker-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Docker version
+        run: docker version && docker compose version
+
+      - name: Build and start the full stack from an empty volume
+        run: docker compose up --build -d
+
+      - name: Wait for API readiness
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/readyz >/dev/null; then
+              echo "api ready after ${i} attempts"; exit 0
+            fi
+            sleep 3
+          done
+          echo "API never became ready"; docker compose ps; docker compose logs api | tail -80
+          exit 1
+
+      - name: Confirm migrations applied to head (0023) from empty volume
+        run: |
+          docker compose logs api | grep -q "Running upgrade 0022 -> 0023" \
+            || (echo "did not observe migration to 0023"; docker compose logs api | grep -i upgrade; exit 1)
+          echo "migrations reached 0023"
+
+      - name: Run scripted end-to-end smoke test against the live stack
+        run: BASE_URL=http://localhost:8000 bash scripts/smoke_test.sh
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --tail 120
+
+      - name: Tear down (always)
+        if: always()
+        run: docker compose down -v
