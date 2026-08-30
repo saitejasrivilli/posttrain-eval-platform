@@ -208,6 +208,52 @@ algorithm itself. Training runs as a real OS subprocess so a hung or
 crashed training process can be forcibly killed (`SIGTERM`→`SIGKILL`)
 without ever taking the Worker process down with it. See `ADR/014-real-training-execution.md`.
 
+### Compact overview
+
+```text
+                     ┌─────────────┐
+                     │     API     │
+                     └──────┬──────┘
+                            │
+                     ┌──────▼──────┐
+                     │ PostgreSQL  │
+                     └──────┬──────┘
+                            │
+             ┌──────────────┴──────────────┐
+             │                             │
+        Scheduler                      Outbox
+             │                             │
+             ▼                             ▼
+      Resource Reserve                  Kafka
+             │                             │
+             └──────────────┬──────────────┘
+                            ▼
+                         Worker
+                    ┌───────┴────────┐
+                    │ Lease/Fencing  │
+                    │ Heartbeat      │
+                    │ Recovery       │
+                    └───────┬────────┘
+                            │
+                    subprocess
+                            │
+             ┌──────────────┴─────────────┐
+             │                            │
+          Training                   Evaluation
+             │                            │
+       Checkpoints                    Metrics
+             │                            │
+             └──────────────┬─────────────┘
+                            ▼
+                    Artifact Storage
+                            │
+                            ▼
+                       Lineage
+                            │
+                            ▼
+                     Quality Gates
+```
+
 ## Failure scenario: checkpoint-10 → kill → recover → step-20
 
 Real evidence from a real Tesla T4 run (`V0.6_GPU_VALIDATION.md`):
