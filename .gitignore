@@ -8,3 +8,11 @@ venv/
 .coverage
 htmlcov/
 .DS_Store
+
+# V0.6 -- generated training outputs never belong in git (see V0.6_GPU_VALIDATION.md)
+v0.6-real-resume/
+*.safetensors
+*.pt
+*.pth
+checkpoint-*/
+hf_cache/

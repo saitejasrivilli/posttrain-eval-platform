@@ -177,8 +177,33 @@ Status: **COMPLETE — v0.5.0**
 - Real training execution (V0.6), evaluation/quality gates (V0.7), model promotion workflow (V0.8)
 - Authentication / authorization
 
+## V0.6 — Real Post-Training Execution
+Status: **DESIGN APPROVED** (GPU-failure-domain and deterministic-checkpoint-selection clarifications applied per review — implementation may begin)
+
+| Gate | Status |
+|---|---|
+| REQUIREMENTS_V0.6.md | Done — pending user review |
+| ARCHITECTURE_V0.6.md (updated HLD) | Done — pending user review |
+| TRAINING_EXECUTION_MODEL_V0.6.md | Done — pending user review |
+| CHECKPOINT_RESUME_MODEL_V0.6.md | Done — pending user review |
+| GPU_WORKER_MODEL_V0.6.md | Done — pending user review |
+| TRAINING_CONFIG_V0.6.md | Done — pending user review |
+| STATE_TRANSITIONS_V0.6.md | Done — pending user review |
+| ADR 014 (real training execution: supervised child subprocess) | Done — pending user review |
+| ADR 015 (checkpoint/resume: retry ≠ resume, 6-rule compatibility) | Done — pending user review |
+| ADR 016 (training-artifact lineage: fencing extends to checkpoint writes) | Done — pending user review |
+| DB_SCHEMA_CHANGES_V0.6.md | Done — pending user review |
+| API_CHANGES_V0.6.md | Done — pending user review |
+| FAILURE_SCENARIOS_V0.6.md (all 20 requested scenarios) | Done — pending user review |
+| Implementation | Not started |
+| Split-brain / fencing test for checkpoint registration (release-blocking, same tier as V0.3/V0.4/V0.5's release-blocking tests) | Not started |
+| Real single-GPU LoRA/QLoRA training run | Not started |
+| Unit/integration tests | Not started |
+| Clean-room verification on real GPU hardware | Not started |
+| Tag v0.6.0 | Not started |
+
 ## Future versions (not started)
-V0.6 real post-training execution (SFT/LoRA against a small real model, checkpoint/resume, real GPU worker concerns), V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
+V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
 
 ## Rule
 No row marked "Done" without a corresponding artifact (test output, CI run link, or doc file) — no self-certified checkmarks.
