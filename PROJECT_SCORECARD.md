@@ -259,7 +259,7 @@ This implementation was carried out in this session by a background agent that s
 - LLM-as-a-judge evaluation
 - Distributed evaluation
 - A generic evaluation-metric plugin system beyond exact_match/token_accuracy/latency (percentile set is fixed at p50/p95, not configurable per-gate)
-- Real GPU-based evaluation (this session's evaluator, like V0.6's toy trainer, is CPU/dependency-free; real-model evaluation would reuse the same `run(context, report)` interface behind a real evaluator body, analogous to how V0.6's real GPU training was validated separately via Colab)
+- Real GPU-based evaluation. V0.7 evaluation execution is currently validated with the deterministic CPU toy evaluator (`app/evaluation/toy_evaluator.py`) only — real GPU evaluation is not claimed anywhere in V0.7. This is distinct from V0.6, which separately validated real CUDA training on a Tesla T4 via Colab (`V0.6_GPU_VALIDATION.md`); V0.7 has no analogous real-GPU evaluation run. A real evaluator would reuse the same `run(context, report)` interface behind a real evaluator body, following the same pattern V0.6 used for training, but that validation has not been performed.
 - Workflow/orchestration engine tying training → evaluation → promotion together automatically
 
 ## Future versions (not started)
