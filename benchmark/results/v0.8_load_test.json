@@ -1,0 +1,43 @@
+{
+  "config": {
+    "n_jobs": 100,
+    "concurrency": 10,
+    "job_type": "sft",
+    "base_url": "http://localhost:8000"
+  },
+  "measured": {
+    "jobs_submitted": 100,
+    "jobs_succeeded": 100,
+    "jobs_failed": 0,
+    "submit_elapsed_seconds": 0.3681,
+    "processing_wall_span_seconds": 6.6051,
+    "throughput_jobs_per_sec": 15.1399,
+    "queue_wait_seconds": {
+      "p50": 2.752283,
+      "p95": 6.29217,
+      "max": 6.303277
+    },
+    "execution_seconds": {
+      "p50": 0.00245,
+      "p95": 0.0068,
+      "max": 0.011648
+    },
+    "total_attempts": 100,
+    "retries": 0,
+    "retry_rate": 0.0
+  },
+  "resource_conservation": {
+    "allocated_before": {
+      "cpu": 0,
+      "memory_mb": 0,
+      "gpu": 0
+    },
+    "allocated_after": {
+      "cpu": 0,
+      "memory_mb": 0,
+      "gpu": 0
+    },
+    "returns_to_zero": true
+  },
+  "captured_at": "2026-08-30T14:31:21Z"
+}
