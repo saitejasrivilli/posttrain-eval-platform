@@ -228,8 +228,42 @@ Real CUDA/GPU execution is validated separately on a real Tesla T4 via Colab (`V
 - Evaluation / quality gates (V0.7), model promotion workflow (V0.8)
 - Authentication / authorization
 
+## V0.7 — Evaluation + Quality Gates
+Status: **IMPLEMENTATION VERIFIED (on branch `v0.7-design`) — not yet tagged, pending release-readiness review**
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Design docs (REQUIREMENTS/ARCHITECTURE/EVALUATION_MODEL/STATE_TRANSITIONS/DB_SCHEMA_CHANGES/API_CHANGES/SCHEDULING_POLICY/QUALITY_GATE_MODEL/FAILURE_SCENARIOS, ADR 017/018/019) | Done | Written before any implementation code, per this project's standing process |
+| Evaluation schema (`evaluation_configs`, `evaluation_runs`, `evaluation_results`, `evaluation_metrics`, `quality_gates`, `quality_gate_results`) | Done | migration `0023_create_v0_7_evaluation_tables.py`; immutable configs/runs; uniqueness `(evaluation_run_id, example_id)` on results, `(evaluation_run_id, metric_name, split)` on metrics, `(evaluation_run_id, quality_gate_id)` on gate results; no destructive change to any V0.1-V0.6 table |
+| Evaluation reuses existing Job/Scheduler/Worker/Recovery pipeline, unmodified | Done | `app/services/evaluations.py::create_evaluation` calls the existing job-creation/outbox pipeline exactly like `training_runs.py::create_training_run`; **live-verified**: a real `POST /v1/evaluations` flowed through Scheduler admission → outbox → Kafka → Worker claim → `SUCCEEDED`, same as any other job |
+| Second fencing layer on evaluation result/metric/completion writes (ADR-016-style) | Done | `app/repository/` evaluation repos, same single conditional INSERT/UPDATE...WHERE EXISTS pattern as `checkpoints.py`; release-blocking tier in `tests/test_evaluation_fencing.py` (9/9): stale evaluator cannot write success/failed/result/metric, cannot complete after reclamation, wrong-attempt-number rejected, duplicate result/metric delivery idempotent, cancellation cannot be overwritten by stale completion |
+| Real evaluator subprocess (extends V0.6's supervised-subprocess model) | Done | `app/evaluation/subprocess_main.py`, `executor.py`, `toy_evaluator.py` (dependency-free, mirrors `app/training/toy_trainer.py` — no torch on this sandbox machine); verifies model + dataset artifact identity/hash via existing V0.5 mechanisms before running |
+| Deterministic metrics (exact_match, token_accuracy, per-example latency, latency_p50/p95) | Done | `app/evaluation/metrics.py`; `tests/test_quality_gates.py::test_metric_functions_are_deterministic`, `test_same_inputs_produce_same_metrics_across_two_runs` |
+| Per-example results | Done | `evaluation_results` table; **live-verified**: 3/3 real per-example results (`prediction`/`expected_output`/`score`/`latency_ms`) returned via `GET /v1/evaluations/{id}/results` |
+| Baseline comparison (optional), rejects incompatible dataset/config | Done | `tests/test_quality_gates.py::test_baseline_dataset_mismatch_rejected`, `test_baseline_config_mismatch_rejected`, `test_baseline_delta_gate_and_explicit_deltas` |
+| Quality gates: immutable, declarative, PASS/FAIL/ERROR, ERROR never promotes to PASS, never mutates a ModelVersion | Done | `app/evaluation/quality_gate_engine.py` (pure function, reads only already-persisted metrics); `tests/test_quality_gates.py` (13 tests) incl. `test_missing_metric_is_error_not_pass`, `test_error_never_becomes_pass_under_all`, `test_invalid_operator_is_error`, `test_gate_rejected_when_run_not_succeeded`, `test_duplicate_gate_evaluation_is_idempotent`; **live-verified**: a malformed gate (`{"logic":"all",...}` instead of `{"all":[...]}`) correctly returned `ERROR` (not a silent PASS); a correctly-shaped gate (`exact_match >= 0.9` against a real 1.0 result) returned real `PASS`; re-invoking the same gate returned the same `id`/`evaluated_at` with `newly_evaluated: false` — idempotent, not double-inserted |
+| Lineage (EvaluationRun → ModelVersion → artifact, DatasetVersion → artifact, EvaluationConfig, code commit, Job, Attempt) | Done | Fixed FK chain per ADR 012's established pattern, not a generic graph; exercised in the real E2E run below |
+| Crash recovery / retry (evaluator crash → LOST → retry → second attempt completes) | Done | `tests/test_evaluation_execution.py::test_evaluator_crash_then_retry_recovers` |
+| Cancellation races | Done | `tests/test_evaluation_fencing.py::test_cancellation_cannot_be_overwritten_by_stale_completion` |
+| Regression safety (V0.1-V0.6 behavior unmodified) | Done | Full suite 129/129 passing (103 pre-existing + 26 new), no existing test modified or weakened |
+| Clean-room migration | Done | `docker compose down -v && up --build`: migrations `0001`-`0023` applied from an empty Postgres volume; all 9 containers (api/db/kafka/minio/worker/outbox-relay/recovery/scheduler/reconciler) healthy, no crash loops; no new service/env-var wiring was needed (Worker's `MINIO_ENDPOINT`/`depends_on: minio` from the V0.6 fix already covers the evaluator's artifact access) |
+| Real end-to-end live verification | Done | Real Docker stack, real HTTP: `POST /v1/datasets` → real-JSON dataset version upload (`{"examples":[...]}`) → `POST /v1/training-runs` → real subprocess training → `SUCCEEDED` → `POST /v1/models/{id}/versions` (registers the real final artifact) → `POST /v1/evaluation-configs` → `POST /v1/evaluations` (real Job through the unmodified outbox/Scheduler/Worker pipeline) → `SUCCEEDED` → `GET /v1/evaluations/{id}/results` (3/3 real per-example results) → `GET /v1/evaluations/{id}/metrics` (5 real aggregate metrics: `exact_match=1.0`, `token_accuracy=1.0`, `latency_mean_ms`/`p50`/`p95`) → `POST /v1/quality-gates` → `POST .../quality-gates/{gate_id}/evaluate` → real `PASS` → re-invoked, confirmed idempotent |
+| Unit/integration tests | Done | 129/129 passing, real Postgres, moto-mocked S3 |
+
+**Release note (v0.7, pending tag):** Evaluation is implemented as a control plane on top of the existing, unmodified V0.2-V0.5 job pipeline — an `EvaluationRun` produces a normal `Job`, admitted by the existing Scheduler, executed by the existing Worker via a supervised subprocess (same shape as V0.6's training executor), with every result/metric/completion write gated by the same ADR-016-style second fencing layer already proven for checkpoints. Quality gates are a pure, declarative function over already-persisted metrics: they can never recompute hidden values, never promote an `ERROR` to `PASS`, and never mutate a `ModelVersion` — gate evaluation only ever writes a `quality_gate_results` row, matching this project's standing rule that model promotion stays a structurally separate, explicit act (established in V0.5, unchanged here). No exactly-once claims, no atomic cross-store transaction claims, no automatic model promotion, no distributed evaluation, no LLM-as-a-judge anywhere in V0.7.
+
+This implementation was carried out in this session by a background agent that stalled partway through (after committing schema/models/repos/API/evaluator/worker-wiring and running the new tests to a passing state, but before committing the 3 new test files or running clean-room Docker verification). The remaining work — committing the test files, clean-room rebuild, and the real end-to-end live verification recorded above — was completed and verified directly in this session, against the actual running Docker stack, not merely inspected in code.
+
+## Explicitly deferred (not implemented, not claimed) — updated for V0.7
+- Automatic model promotion/registration on quality-gate PASS (gate evaluation is read-only with respect to `ModelVersion`; promotion remains a separate, explicit, unbuilt act — deferred to V0.8 per the original V0.7 design)
+- LLM-as-a-judge evaluation
+- Distributed evaluation
+- A generic evaluation-metric plugin system beyond exact_match/token_accuracy/latency (percentile set is fixed at p50/p95, not configurable per-gate)
+- Real GPU-based evaluation (this session's evaluator, like V0.6's toy trainer, is CPU/dependency-free; real-model evaluation would reuse the same `run(context, report)` interface behind a real evaluator body, analogous to how V0.6's real GPU training was validated separately via Colab)
+- Workflow/orchestration engine tying training → evaluation → promotion together automatically
+
 ## Future versions (not started)
-V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.
+V0.8 release/promotion mgmt, V0.9 observability, V1.0 production simulation.
 
 ## Rule
 No row marked "Done" without a corresponding artifact (test output, CI run link, or doc file) — no self-certified checkmarks.

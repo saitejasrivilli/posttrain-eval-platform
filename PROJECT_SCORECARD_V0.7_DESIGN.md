@@ -1,6 +1,6 @@
-# V0.7 DESIGN SCORECARD
+# V0.7 DESIGN SCORECARD (historical — design-phase snapshot)
 
-Status: **DESIGN COMPLETE — implementation not started**
+Status: **SUPERSEDED — implementation complete, see `PROJECT_SCORECARD.md`'s V0.7 section for real evidence.** This file is kept as-is to document what was designed before implementation began; do not update it further.
 
 | Capability | Design status | Evidence required before release |
 |---|---|---|
