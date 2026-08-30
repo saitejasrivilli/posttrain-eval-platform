@@ -11,6 +11,7 @@ from app.models.job import JobStatus
 from app.repository import attempts as attempts_repo
 from app.repository import capacity as capacity_repo
 from app.repository import dlq as dlq_repo
+from app.repository import evaluation_runs as evaluation_runs_repo
 from app.repository import jobs as repo
 from app.repository import reservations as reservations_repo
 from app.repository import training_runs as training_runs_repo
@@ -116,6 +117,7 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str, storage_
         # (ADR 014) instead of the simulated in-process executor -- both
         # converge on the identical finalize_attempt() call below.
         training_run = training_runs_repo.get_by_job_id(db, job_id)
+        evaluation_run = None if training_run is not None else evaluation_runs_repo.get_by_job_id(db, job_id)
         if training_run is not None:
             from app.training.executor import run_training_attempt
 
@@ -130,6 +132,23 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str, storage_
             error_message = training_outcome.error_message
             classification = training_outcome.error_classification
             failure_domain = training_outcome.failure_domain
+        elif evaluation_run is not None:
+            # V0.7: a job backed by an EvaluationRun takes the real evaluation
+            # subprocess path (ADR 017), exactly parallel to the training path.
+            # Same Worker, same Scheduler, same Recovery -- no second worker.
+            from app.evaluation.executor import run_evaluation_attempt
+
+            if storage_client is None:
+                from app.storage import make_client
+
+                storage_client = make_client()
+            evaluation_outcome = run_evaluation_attempt(
+                db, storage_client, job, worker_id, attempt_number, evaluation_run, heartbeat_loop
+            )
+            outcome = evaluation_outcome.status
+            error_message = evaluation_outcome.error_message
+            classification = evaluation_outcome.error_classification
+            failure_domain = evaluation_outcome.failure_domain
         else:
             outcome, error_message, classification = _run_executor(job)
     finally:

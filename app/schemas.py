@@ -220,3 +220,80 @@ class TrainingRunOut(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- V0.7: evaluation & quality gates ---
+
+
+class EvaluationConfigCreate(BaseModel):
+    task_type: str = Field(min_length=1, max_length=128)
+    metric_definitions: dict[str, Any] = Field(default_factory=dict)
+    batch_size: int = Field(default=1, ge=1)
+    max_examples: Optional[int] = Field(default=None, ge=1)
+    max_sequence_length: Optional[int] = Field(default=None, ge=1)
+    evaluator_code_commit: str
+    container_image: str
+    random_seed: Optional[int] = None
+
+
+class EvaluationConfigOut(BaseModel):
+    id: uuid.UUID
+    task_type: str
+    metric_definitions: dict[str, Any]
+    batch_size: int
+    max_examples: Optional[int] = None
+    max_sequence_length: Optional[int] = None
+    evaluator_code_commit: str
+    container_image: str
+    random_seed: Optional[int] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EvaluationCreate(BaseModel):
+    model_id: uuid.UUID
+    model_version_number: int
+    dataset_id: uuid.UUID
+    dataset_version_number: int
+    evaluation_config_id: uuid.UUID
+    baseline_model_id: Optional[uuid.UUID] = None
+    baseline_model_version_number: Optional[int] = None
+    job_type: str = Field(default="evaluation_run", min_length=1, max_length=128)
+    priority: int = Field(default=50, ge=0, le=100)
+    job_config: Optional[dict[str, Any]] = None
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class EvaluationOut(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    model_id: uuid.UUID
+    model_version_number: int
+    dataset_id: uuid.UUID
+    dataset_version_number: int
+    evaluation_config_id: uuid.UUID
+    baseline_model_id: Optional[uuid.UUID] = None
+    baseline_model_version_number: Optional[int] = None
+    status: str
+    evaluator_code_commit: str
+    container_image: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class QualityGateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    rules: dict[str, Any]
+
+
+class QualityGateOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    rules: dict[str, Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
