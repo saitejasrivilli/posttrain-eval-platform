@@ -32,6 +32,20 @@ def run(context: dict, report) -> None:
     learning_rate = context["learning_rate"]
     target_value = context.get("target_value", 1.0)
 
+    # V0.8 hardening: stamp the run/attempt identity into every saved artifact.
+    # Checkpoint/final bytes are otherwise a pure function of the hyperparameters
+    # (param, step), so two DIFFERENT training runs with identical config produce
+    # byte-identical files. Artifact storage is content-addressed (dedup by
+    # SHA-256), and `checkpoints.artifact_id` carries a UNIQUE constraint -- so
+    # the second such run collided on `checkpoints_artifact_id_key` and failed.
+    # This mirrors the existing nonce the evaluation tests already use to keep
+    # distinct models from deduping to one artifact. Resume reads only
+    # param/step, so these extra keys are inert to the training math.
+    identity = {
+        "training_run_id": context.get("training_run_id"),
+        "attempt_number": context.get("attempt_number"),
+    }
+
     if context.get("resume_from"):
         with open(context["resume_from"]["local_path"]) as f:
             state = json.load(f)
@@ -54,10 +68,10 @@ def run(context: dict, report) -> None:
         if step % checkpoint_every_n_steps == 0 and step < max_steps:
             local_path = os.path.join(work_dir, f"checkpoint-{step}.json")
             with open(local_path, "w") as f:
-                json.dump({"param": param, "step": step}, f)
+                json.dump({"param": param, "step": step, **identity}, f)
             report({"event": "checkpoint", "step": step, "local_path": local_path})
 
     final_path = os.path.join(work_dir, "final_model.json")
     with open(final_path, "w") as f:
-        json.dump({"param": param, "step": step, "final": True}, f)
+        json.dump({"param": param, "step": step, "final": True, **identity}, f)
     report({"event": "final", "step": step, "local_path": final_path})
