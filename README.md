@@ -3,6 +3,52 @@
 A production-style ML execution platform built incrementally from durable
 job execution to real GPU training and crash-resilient checkpoint recovery.
 
+## V0.7 — Evaluation + Quality Gates
+
+V0.7 adds an evaluation control plane on top of the existing pipeline:
+`ModelVersion → DatasetVersion → EvaluationRun` produces a normal `Job`,
+admitted by the existing Scheduler and executed by the existing Worker via
+a supervised subprocess (same shape as V0.6's training executor). Every
+per-example result, aggregate metric, and gate outcome is written through a
+second, job-liveness-conditioned fencing layer — a stale evaluator can
+never corrupt authoritative state.
+
+```text
+Dataset
+   ↓
+Training → ModelVersion
+   ↓
+EvaluationConfig
+   ↓
+EvaluationRun → Job → Scheduler → Worker → evaluator subprocess
+   ↓
+per-example results + aggregate metrics
+   ↓
+Quality Gate
+   ├── malformed rules → ERROR (never silently PASS)
+   └── exact_match 1.0 ≥ 0.9 → PASS
+```
+
+Quality gates are a pure, read-only function over already-persisted
+metrics: they never recompute hidden values, never mutate a `ModelVersion`,
+and never promote a model automatically — gate evaluation writes only a
+`quality_gate_results` row. Promotion remains a separate, explicit,
+not-yet-built act (deferred to V0.8), the same discipline V0.5 established
+for explicit model registration.
+
+**V0.7 evaluation execution is currently validated with the deterministic
+CPU toy evaluator. Real GPU evaluation is not claimed.** This is distinct
+from V0.6, which separately validated real CUDA training on a Tesla T4.
+
+129/129 tests passing (103 pre-existing + 26 new). Clean-room Docker
+verification passing (migrations `0001`-`0023` from an empty volume). Real
+end-to-end run performed against the live Docker stack: dataset → training
+→ model registration → evaluation-config → evaluation → 3/3 real
+per-example results → 5 real aggregate metrics → quality gate (real
+`PASS`, and separately a malformed gate correctly returned `ERROR`) → a
+repeated gate evaluation confirmed idempotent (not double-inserted). See
+`PROJECT_SCORECARD.md` for the full evidence table.
+
 ## V0.6 — Real GPU Training + Checkpoint Resume
 
 V0.6 executes real LoRA SFT on a Tesla T4 using `HuggingFaceTB/SmolLM2-135M`.
@@ -42,9 +88,11 @@ V0.4 Resource-aware scheduling
 V0.5 Dataset/model/artifact lineage
     ↓
 V0.6 Real GPU training + checkpoint/resume
+    ↓
+V0.7 Evaluation + quality gates
 ```
 
-Every version is tagged (`v0.1.0`-`v0.6.0`); see `PROJECT_SCORECARD.md` for
+Every version is tagged (`v0.1.0`-`v0.7.0`); see `PROJECT_SCORECARD.md` for
 the full gate-by-gate evidence backing each one.
 
 ## Architecture
@@ -167,7 +215,7 @@ Full narrative writeup: `V0.6_GPU_VALIDATION.md`.
 
 ## Current limitations
 
-V0.6 does not claim:
+This platform does not claim:
 
 - multi-GPU or distributed training (DDP/NCCL)
 - Kubernetes, Ray, or Slurm scheduling
@@ -182,8 +230,15 @@ V0.6 does not claim:
 - authentication / authorization (stubbed only)
 - CUDA execution proven inside this repo's own Docker/CI environment — that
   environment has no GPU; real CUDA execution is validated separately on a
-  real Tesla T4 via Colab, kept explicitly distinct from the CPU-only
-  application-code tests
+  real Tesla T4 via Colab (V0.6 training only), kept explicitly distinct
+  from the CPU-only application-code tests
+- real GPU-based evaluation (V0.7's evaluator is the deterministic CPU toy
+  evaluator only — unlike V0.6's training, no real-GPU evaluation run exists)
+- automatic model promotion on quality-gate PASS (gate evaluation is
+  read-only with respect to `ModelVersion`; promotion is a separate,
+  explicit, not-yet-built act — deferred to V0.8)
+- LLM-as-a-judge evaluation, distributed evaluation, or a configurable
+  metric-plugin system beyond exact_match/token_accuracy/latency p50/p95
 
 See `PROJECT_SCORECARD.md` for the full deferred-scope list at every version.
 
@@ -201,9 +256,9 @@ curl localhost:8000/healthz
 curl localhost:8000/readyz
 ```
 
-See `API_CHANGES_V0.1.md` through `API_CHANGES_V0.6.md` for the full endpoint
-history, and `ARCHITECTURE.md` / `ARCHITECTURE_V0.6.md` for the full design
-rationale.
+See `API_CHANGES_V0.1.md` through `API_CHANGES_V0.7.md` for the full endpoint
+history, and `ARCHITECTURE.md` / `ARCHITECTURE_V0.6.md` / `ARCHITECTURE_V0.7.md`
+for the full design rationale.
 
 ## Design docs
 
