@@ -24,11 +24,14 @@ hand in a chat session and never automated.
   authoritative Postgres state at scrape time, so they are correct across all
   containers rather than siloed per-process — every value traces to a row a
   real code path wrote. See `app/metrics.py`.
-- **One reproducible load test.** `scripts/load_test.py` submits 100 jobs across
-  10 concurrent submitters against the live stack. Real measured output in
-  `benchmark/results/v0.8_load_test.json`: 100/100 succeeded, ~15 jobs/s,
-  queue-wait p50 2.75s / p95 6.29s, retry rate 0.0, and allocated capacity
-  returns to zero (resource-conservation invariant held).
+- **One reproducible infrastructure load test.** `scripts/load_test.py` submits
+  100 jobs across 10 concurrent submitters against the live stack, on the CPU
+  toy-training execution path (not real GPU training — see the separate Tesla
+  T4 validation below). Real measured output in
+  `benchmark/results/v0.8_load_test.json`: 100/100 succeeded, throughput 15.14
+  jobs/s, queue-wait p50 2.75s / p95 6.29s, execution p50 2.45ms / p95 6.8ms,
+  retry rate 0.0, and allocated capacity returns to zero (resource-conservation
+  invariant held).
 - **Scripted recovery demo.** `scripts/demo_checkpoint_recovery.sh` reproduces
   the checkpoint-10 → `docker kill` → recover → step-20 flow against the real
   stack; the real captured transcript is in
@@ -38,8 +41,13 @@ hand in a chat session and never automated.
 
 131/131 tests passing (129 pre-existing + 2 new metrics tests; no existing test
 weakened). One real defect was found and fixed while building the repeatable
-smoke test (checkpoint artifact dedup collision under identical hyperparameters).
-See `PROJECT_SCORECARD.md` → "V0.8 — Hardening" for the full evidence table.
+smoke test: content-addressing correctly identified two identical-config runs
+as producing identical bytes, but a checkpoint record also needs distinct
+execution-instance identity (which run, which attempt) — the schema conflated
+those two identities, causing every training job after the first to fail on a
+UNIQUE-constraint collision. Fixed by tracking content identity and
+checkpoint-instance identity separately. See `PROJECT_SCORECARD.md` →
+"V0.8 — Hardening" for the full evidence table.
 
 ## V0.7 — Evaluation + Quality Gates
 
