@@ -1,0 +1,78 @@
+===================================================================
+ V0.8 checkpoint-recovery demo  (checkpoint-10 -> kill -> step-20)
+ target: http://localhost:8000   worker service: worker
+===================================================================
+[1] create dataset + version
+    dataset=d37829d5-c594-4ec5-9c81-acd660c62643 version=1
+[2] create training run (max_steps=20, checkpoint every 10, step_sleep=2s)
+    training_run=49abf871-33da-451f-9a3d-f2dd46d58957 job=b6edb1f2-c9df-4ae8-ba23-a89c35c23f4f
+[3] wait for checkpoint at step 10 to be registered...
+    checkpoint-10 registered: [{"training_run_id":"49abf871-33da-451f-9a3d-f2dd46d58957","attempt_number":1,"step":10,"artifact_id":"418e3e15-ef12-46bd-a171-f8e23923fa06","checkpoint_format_version":1,"created_at":"2026-08-30T14:33:27.969091+00:00"}]
+    current attempt_number before kill: 1
+[4] KILL the worker mid-training (real docker kill -9)
+ Container posttrain-eval-platform-worker-1 Killing 
+ Container posttrain-eval-platform-worker-1 Killed 
+    worker killed at 14:33:28 -- lease will expire, Recovery will reclaim
+[5] restart the worker container
+ Container posttrain-eval-platform-minio-1 Running 
+ Container posttrain-eval-platform-db-1 Running 
+ Container posttrain-eval-platform-kafka-1 Running 
+ Container posttrain-eval-platform-minio-1 Waiting 
+ Container posttrain-eval-platform-db-1 Waiting 
+ Container posttrain-eval-platform-kafka-1 Waiting 
+ Container posttrain-eval-platform-minio-1 Healthy 
+ Container posttrain-eval-platform-db-1 Healthy 
+ Container posttrain-eval-platform-kafka-1 Healthy 
+ Container posttrain-eval-platform-worker-1 Starting 
+ Container posttrain-eval-platform-worker-1 Started 
+    worker restarted
+[6] wait for the job to reach SUCCEEDED via attempt 2 (resumed)...
+    final status: SUCCEEDED
+[7] attempt history (attempt 1 LOST -> recovered -> attempt 2 SUCCEEDED)
+[
+    {
+        "job_id": "b6edb1f2-c9df-4ae8-ba23-a89c35c23f4f",
+        "attempt_number": 1,
+        "worker_id": "worker-1",
+        "status": "LOST",
+        "started_at": "2026-08-30T14:33:07.528099Z",
+        "finished_at": "2026-08-30T14:33:57.773921Z",
+        "error_message": "worker_lost: lease expired",
+        "error_classification": "transient"
+    },
+    {
+        "job_id": "b6edb1f2-c9df-4ae8-ba23-a89c35c23f4f",
+        "attempt_number": 2,
+        "worker_id": "worker-1",
+        "status": "SUCCEEDED",
+        "started_at": "2026-08-30T14:34:02.978904Z",
+        "finished_at": "2026-08-30T14:34:23.421105Z",
+        "error_message": null,
+        "error_classification": null
+    }
+]
+[8] final training output + checkpoints
+{
+    "training_run_id": "49abf871-33da-451f-9a3d-f2dd46d58957",
+    "final_artifact_id": "6cc3f340-b56e-4435-8e23-66bb46fb7dff",
+    "attempt_number": 2,
+    "created_at": "2026-08-30T14:34:23.415652+00:00"
+}
+    checkpoints:
+[
+    {
+        "training_run_id": "49abf871-33da-451f-9a3d-f2dd46d58957",
+        "attempt_number": 1,
+        "step": 10,
+        "artifact_id": "418e3e15-ef12-46bd-a171-f8e23923fa06",
+        "checkpoint_format_version": 1,
+        "created_at": "2026-08-30T14:33:27.969091+00:00"
+    }
+]
+===================================================================
+ RESULT: job SUCCEEDED. attempt_number went 1 -> 2
+ (attempt 1 was killed after checkpoint-10; attempt 2 resumed from it
+  and completed to step 20 -- zero data loss, deterministic resume).
+ NOTE: a human must screen-record this run for the demo video;
+       this script only produces the reproducible transcript.
+===================================================================

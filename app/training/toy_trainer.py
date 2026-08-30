@@ -56,9 +56,17 @@ def run(context: dict, report) -> None:
         param = 0.0
         start_step = 0
 
+    # V0.8: optional per-step wall-clock delay. Defaults to 0 (inert for every
+    # existing test/CI path). Used only by scripts/demo_checkpoint_recovery.sh
+    # to make the toy trainer run long enough for a deterministic mid-run
+    # `docker kill` after a checkpoint is registered but before completion.
+    step_sleep_seconds = context.get("step_sleep_seconds", 0)
+
     step = start_step
     while step < max_steps:
         step += 1
+        if step_sleep_seconds:
+            time.sleep(step_sleep_seconds)
         error = target_value - param
         param += learning_rate * error
         loss = error * error
