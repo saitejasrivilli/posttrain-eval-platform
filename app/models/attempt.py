@@ -18,3 +18,6 @@ class Attempt(Base):
     finished_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(String, nullable=True)
     error_classification = Column(String, nullable=True)  # transient | permanent | unknown
+    # V0.6: orthogonal to error_classification -- INFRASTRUCTURE | TRAINING.
+    # Keeps ML failure metrics honest (GPU_WORKER_MODEL_V0.6.md).
+    failure_domain = Column(String, nullable=True)

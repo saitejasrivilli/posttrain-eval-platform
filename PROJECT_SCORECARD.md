@@ -178,29 +178,55 @@ Status: **COMPLETE — v0.5.0**
 - Authentication / authorization
 
 ## V0.6 — Real Post-Training Execution
-Status: **DESIGN APPROVED** (GPU-failure-domain and deterministic-checkpoint-selection clarifications applied per review — implementation may begin)
+Status: **COMPLETE — v0.6.0**
 
-| Gate | Status |
-|---|---|
-| REQUIREMENTS_V0.6.md | Done — pending user review |
-| ARCHITECTURE_V0.6.md (updated HLD) | Done — pending user review |
-| TRAINING_EXECUTION_MODEL_V0.6.md | Done — pending user review |
-| CHECKPOINT_RESUME_MODEL_V0.6.md | Done — pending user review |
-| GPU_WORKER_MODEL_V0.6.md | Done — pending user review |
-| TRAINING_CONFIG_V0.6.md | Done — pending user review |
-| STATE_TRANSITIONS_V0.6.md | Done — pending user review |
-| ADR 014 (real training execution: supervised child subprocess) | Done — pending user review |
-| ADR 015 (checkpoint/resume: retry ≠ resume, 6-rule compatibility) | Done — pending user review |
-| ADR 016 (training-artifact lineage: fencing extends to checkpoint writes) | Done — pending user review |
-| DB_SCHEMA_CHANGES_V0.6.md | Done — pending user review |
-| API_CHANGES_V0.6.md | Done — pending user review |
-| FAILURE_SCENARIOS_V0.6.md (all 20 requested scenarios) | Done — pending user review |
-| Implementation | Not started |
-| Split-brain / fencing test for checkpoint registration (release-blocking, same tier as V0.3/V0.4/V0.5's release-blocking tests) | Not started |
-| Real single-GPU LoRA/QLoRA training run | Not started |
-| Unit/integration tests | Not started |
-| Clean-room verification on real GPU hardware | Not started |
-| Tag v0.6.0 | Not started |
+| Capability | Status | Evidence |
+|---|---|---|
+| Design docs (REQUIREMENTS/ARCHITECTURE/TRAINING_EXECUTION_MODEL/CHECKPOINT_RESUME_MODEL/GPU_WORKER_MODEL/TRAINING_CONFIG/STATE_TRANSITIONS/DB_SCHEMA_CHANGES/API_CHANGES/FAILURE_SCENARIOS, ADR 014/015/016) | Done | Reviewed and approved by user with 2 required clarifications (GPU failure-domain, deterministic checkpoint ordering), both applied |
+| Supervised subprocess training (SIGTERM→SIGKILL, no in-process/thread execution) | Done | `app/training/executor.py`, `app/training/subprocess_main.py`, ADR 014; `app/training/toy_trainer.py` real dependency-free CPU training body (no torch on this sandbox machine) |
+| GPU verification (fails closed, runs inside subprocess) | Done | `app/training/gpu.py`; `tests/test_gpu_verification.py` (5/5 passing) |
+| Checkpoint upload/registration via V0.5 artifact model, unmodified | Done | `app/repository/checkpoints.py`; `tests/test_training_execution.py::test_real_subprocess_training_produces_final_artifact_and_lineage` (real subprocess, real checkpoints at steps [2,4]) |
+| Training metrics recorded per step | Done | `app/repository/training_metrics.py`; same test, 6/6 metrics recorded with decreasing loss — **real defect caught and fixed this session**: `_handle_event()` initially had no case for `"metric"` events, silently dropping every metric row; fixed, re-verified |
+| Second fencing layer on checkpoint/output registration (ADR 016) — stale worker's artifact bytes may upload but are never trusted | Done | `tests/test_checkpoint_fencing.py` (6/6): `test_stale_worker_cannot_register_checkpoint`, `test_stale_worker_cannot_finalize_output`, `test_wrong_attempt_number_cannot_register_checkpoint`, `test_hash_mismatch_rejected`, `test_base_model_mismatch_rejected`, `test_unsupported_format_version_rejected` |
+| Deterministic checkpoint selection (`step DESC, attempt_number DESC, created_at DESC`) + 6-rule compatibility check | Done | `app/training/checkpoint_discovery.py`; covered by the fencing tests above (hash/base-model/format-version rejection) plus `test_worker_kill_then_retry_resumes_from_checkpoint` |
+| Retry ≠ resume (Attempt 2 is a fresh attempt that discovers a checkpoint as input, never "continue Attempt 1") | Done | `app/repository/attempt_resume_decisions.py`; `tests/test_training_execution.py::test_worker_kill_then_retry_resumes_from_checkpoint` — asserts `resumed_from_step == 2` under a real V0.3 reclaim, and that attempt 1's checkpoint lineage is preserved distinct from attempt 2's |
+| `failure_domain` (INFRASTRUCTURE vs TRAINING), orthogonal to `error_classification` | Done | migration 0018, `app/models/attempt.py`; wired through `app/services/worker.py`'s training-outcome branch |
+| Worker made testable (injectable storage client) | Done | **Real defect caught and fixed this session**: `process_job_message()` ignored an injected test `storage_client`, always building a real MinIO client — made the training path untestable without live MinIO. Fixed via `storage_client=None` default param, production behavior unchanged |
+| Worker Docker Compose wiring for object storage | Done | **Real defect caught and fixed this session** (Docker Compose review, before any container was started): `worker` service was missing `MINIO_ENDPOINT` env var and a `depends_on: minio` — V0.6 is the first version where the Worker itself touches object storage (training checkpoints), and the omission would have made every real training job crash on `EndpointConnectionError` the moment it hit a real cluster. Fixed in `docker-compose.yml` before clean-room verification. |
+| Only one service (`api`) runs Alembic migrations | Done | Confirmed by inspection: only `api`'s Dockerfile `CMD` runs `alembic upgrade head`; all other services override `command:` to their own entrypoint |
+| No service assumes host GPU availability | Done | Confirmed by inspection: no `deploy.resources.reservations.devices`/`runtime: nvidia` anywhere in `docker-compose.yml`; `verify_gpu()` fails closed (not crashes) when `torch` is unimportable or CUDA unavailable, proven by `tests/test_gpu_verification.py` |
+| Clean-room rebuild from empty volumes | Done | `docker compose down -v && docker compose up --build` — all 22/22 migrations (`0001`-`0022`) applied from a fresh Postgres volume, all 9 containers (api/db/kafka/minio/worker/outbox-relay/recovery/scheduler/reconciler) came up healthy with zero manual steps |
+| Live end-to-end path (real HTTP → real Kafka → real Postgres → real MinIO → real subprocess) | Done | POST `/v1/datasets` → POST `/v1/datasets/{id}/versions` (real MinIO upload) → POST `/v1/training-runs` → Scheduler admission+reservation → outbox→Kafka dispatch → Worker claim → real `subprocess.Popen` → toy training loop → checkpoints at steps 2,4 registered → 6/6 metrics recorded → final artifact registered distinct from checkpoints → job `SUCCEEDED`. All observed via `curl` against the running compose stack, no direct DB/gRPC shortcuts. |
+| Live worker-crash → recovery → retry (real `docker kill`, real multi-process) | Done | Real `SIGKILL` on the worker container mid-execution (a `simulate_sleep` job, killed 9s into a 25s run) → attempt 1 marked `LOST` (`error_classification=transient`) via real Recovery poll on lease expiry → Scheduler re-admitted → outbox re-dispatched → restarted worker container claimed attempt 2 → `SUCCEEDED`. Full attempt history retrieved via `GET /v1/jobs/{id}/attempts` showing both attempts. |
+| Live object-storage failure (MinIO down) | Done | `docker compose stop minio` then a real (non-duplicate-content) dataset-version upload → clean `500`, no dangling/half-created version row (`GET /v1/datasets/{id}/versions` showed no orphan); `docker compose start minio` restored normal operation |
+| Live Postgres failure | Done | `docker compose stop db` → `/healthz` still `200` (liveness has no DB dependency) but `/readyz` correctly `503`; outbox-relay logged connection-refused and self-healed (no crash loop) once `db` restarted |
+| Live Kafka failure | Done | `docker compose stop kafka` → new job admitted (reservation created) but stuck `QUEUED` (outbox couldn't publish) — zero data loss, no crash; `docker compose up -d kafka` → job dispatched and completed automatically on Kafka's return |
+| Crash-mid-training + checkpoint resume (deterministic, subprocess-level) | Done | Not independently re-proven live in this Docker pass (the toy trainer completes in milliseconds, making a manually-timed `docker kill` mid-subprocess non-deterministic) — proven instead by the deterministic pytest release-blocking test `test_worker_kill_then_retry_resumes_from_checkpoint`, which exercises the real subprocess/real checkpoint/real V0.3 reclaim path without depending on wall-clock timing luck |
+| Real GPU (CUDA) training execution | Verified separately on real Tesla T4 hardware via Colab, NOT via this Docker/CI environment | `V0.6_GPU_VALIDATION.md`, `notebooks/v0.6_real_gpu_checkpoint_resume.ipynb`. This repo's own Docker/CI environment has no GPU and is not claimed to prove CUDA execution — the toy trainer proves platform mechanics (fencing, lineage, checkpoint/resume, retry) on CPU only. |
+| Clean migration | Done | 22/22 migrations (`0001`-`0022`) applied from scratch, both locally (pytest fixture) and in the Docker clean-room rebuild |
+| Unit/integration tests | Done | 103/103 passing, real Postgres, moto-mocked S3 for speed (live verification used real MinIO separately) |
+
+**Release note (v0.6.0):** Real (CPU, dependency-free toy trainer) subprocess-based training execution is fully wired end-to-end through the unmodified V0.2-V0.5 pipeline: Scheduler resource reservation → Kafka dispatch → Worker → supervised OS subprocess → checkpoint/metric/final-artifact reporting → V0.5 artifact upload → a **second**, job-liveness-conditioned fencing layer (ADR 016, release-blocking tier, same class as V0.3's split-brain test / V0.4's no-overcommit test / V0.5's artifact-consistency tests — `tests/test_checkpoint_fencing.py`, 6/6) before any checkpoint or final output is ever trusted.
+
+Two real defects were caught and fixed during this implementation/verification pass, both reported before fixing per this project's standing rule:
+1. **Missing metric recording.** `app/training/executor.py::_handle_event()` had no case for `event_type == "metric"` — every per-step loss/learning-rate event from the training subprocess was silently dropped, so `training_metrics` stayed empty on real runs even though checkpoints/output registered correctly. Root cause: the handler was written for checkpoint/final events only and the metric case was never added. Fixed by adding the `"metric"` branch calling `metrics_repo.record(...)`. Regression is now caught by `tests/test_training_execution.py::test_real_subprocess_training_produces_final_artifact_and_lineage`, which asserts `total == 6` and `[m.step for m in metrics] == [1,2,3,4,5,6]` against a real subprocess run — any future regression that stops recording metrics fails this test immediately.
+2. **Worker container missing object-storage wiring.** `docker-compose.yml`'s `worker` service had no `MINIO_ENDPOINT` env var or `depends_on: minio` — V0.6 is the first version where the Worker itself touches object storage (uploading training checkpoints), and every prior version's worker never needed MinIO. Caught during the Docker Compose review, before any container was started, so it never manifested as a live failure in this session — but would have crashed every real training job with `EndpointConnectionError` on a fresh clone. Fixed in `docker-compose.yml`; no automated regression test guards this (compose wiring isn't unit-testable), so it is flagged here explicitly for future reviewers to re-check whenever a new service starts touching a new dependency.
+
+Crash-mid-training-with-resume is proven deterministically via the dedicated pytest release-blocking test `test_worker_kill_then_retry_resumes_from_checkpoint` rather than a manually-timed live `docker kill`, because the toy trainer's sub-second runtime makes wall-clock-timed interruption non-deterministic. The worker-crash-during-a-long-running-job path (generic, not training-specific) *was* proven live via real `docker kill` + real lease expiry + real Recovery + real retry, in the same Docker Compose stack.
+
+Real CUDA/GPU execution is validated separately on a real Tesla T4 via Colab (`V0.6_GPU_VALIDATION.md`, `notebooks/v0.6_real_gpu_checkpoint_resume.ipynb`: SmolLM2-135M + LoRA SFT, checkpoint-10 killed with `os._exit(137)`, new process resumed via SHA-256-verified checkpoint with optimizer/scheduler/RNG state restored, completed to step 20, final adapter artifact produced) — never claimed to have been proven inside this project's ordinary Docker/CI environment, which has no GPU.
+
+## Explicitly deferred (not implemented, not claimed) — updated for V0.6
+- Multi-GPU / distributed training (DDP, NCCL)
+- Kubernetes, Ray, Slurm
+- Checkpoint garbage collection / retention policy
+- Checkpoint/model promotion or deletion workflow
+- Production GPU topology / per-node placement awareness
+- Autoscaling
+- Real cloud object-store validation (MinIO is the local/production-analog implementation; no S3/GCS-specific validation performed)
+- Bit-for-bit deterministic training after resume (no such claim made anywhere)
+- Evaluation / quality gates (V0.7), model promotion workflow (V0.8)
+- Authentication / authorization
 
 ## Future versions (not started)
 V0.7 evaluation, V0.8 release mgmt, V0.9 observability, V1.0 production simulation.

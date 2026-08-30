@@ -39,5 +39,10 @@ class Settings(BaseSettings):
     upload_lease_duration_seconds: int = 60
     upload_heartbeat_interval_seconds: int = 10
 
+    # V0.6 -- see ARCHITECTURE_V0.6.md "Config additions"
+    training_termination_grace_seconds: int = 10
+    checkpoint_step_interval: int = 50
+    checkpoint_format_version: int = 1
+
 
 settings = Settings()

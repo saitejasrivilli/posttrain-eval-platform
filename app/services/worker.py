@@ -13,6 +13,7 @@ from app.repository import capacity as capacity_repo
 from app.repository import dlq as dlq_repo
 from app.repository import jobs as repo
 from app.repository import reservations as reservations_repo
+from app.repository import training_runs as training_runs_repo
 from app.retry_policy import PERMANENT, UNKNOWN, compute_next_retry_at, is_retryable
 
 
@@ -85,7 +86,7 @@ class _HeartbeatLoop:
                 db.close()
 
 
-def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
+def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str, storage_client=None) -> str:
     """Idempotent, fencing-safe handling of one job.queued (or retry-dispatch)
     message. Returns a short outcome string for logging/testing:
       "claimed"      -- this call ran the job to a terminal-or-retry state
@@ -96,7 +97,10 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
                         or finalize rejected) -- result discarded, never retried
                         from here (Recovery will have already requeued or
                         failed the job under a newer attempt_number).
-    """
+
+    storage_client: injectable for tests (V0.6 -- a real training attempt
+    needs an S3-compatible client; defaults to the real MinIO client via
+    app.storage.make_client() when not provided, exactly as production does)."""
     job = repo.claim(db, job_id, worker_id, settings.lease_duration_seconds)
     if job is None:
         return "not_claimed"
@@ -106,8 +110,28 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
 
     heartbeat_loop = _HeartbeatLoop(job_id, worker_id, attempt_number)
     heartbeat_loop.start()
+    failure_domain = None
     try:
-        outcome, error_message, classification = _run_executor(job)
+        # V0.6: a job backed by a TrainingRun takes the real subprocess path
+        # (ADR 014) instead of the simulated in-process executor -- both
+        # converge on the identical finalize_attempt() call below.
+        training_run = training_runs_repo.get_by_job_id(db, job_id)
+        if training_run is not None:
+            from app.training.executor import run_training_attempt
+
+            if storage_client is None:
+                from app.storage import make_client
+
+                storage_client = make_client()
+            training_outcome = run_training_attempt(
+                db, storage_client, job, worker_id, attempt_number, training_run, heartbeat_loop
+            )
+            outcome = training_outcome.status
+            error_message = training_outcome.error_message
+            classification = training_outcome.error_classification
+            failure_domain = training_outcome.failure_domain
+        else:
+            outcome, error_message, classification = _run_executor(job)
     finally:
         heartbeat_loop.stop()
 
@@ -153,7 +177,8 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
             extra_values={"next_retry_at": next_retry_at}, commit=False,
         )
         attempts_repo.finalize(
-            db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification, commit=False
+            db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification,
+            failure_domain=failure_domain, commit=False,
         )
         if finalized is not None:
             # This attempt is done (it'll retry as a NEW attempt with its own
@@ -169,7 +194,8 @@ def process_job_message(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
         db, job_id, worker_id, attempt_number, JobStatus.FAILED.value, commit=False
     )
     attempts_repo.finalize(
-        db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification, commit=False
+        db, job_id, attempt_number, JobStatus.FAILED.value, error_message, classification,
+        failure_domain=failure_domain, commit=False,
     )
     if finalized is not None:
         dlq_repo.insert(

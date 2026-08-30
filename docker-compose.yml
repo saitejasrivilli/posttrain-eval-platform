@@ -89,12 +89,15 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/postgres
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_ENDPOINT: minio:9000
       LOG_LEVEL: INFO
       WORKER_ID: worker-1
     depends_on:
       db:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   recovery:

@@ -45,6 +45,7 @@ def finalize(
     status: str,
     error_message: str | None = None,
     error_classification: str | None = None,
+    failure_domain: str | None = None,
     commit: bool = True,
 ) -> Attempt | None:
     attempt = get(db, job_id, attempt_number)
@@ -54,6 +55,7 @@ def finalize(
     attempt.finished_at = datetime.now(timezone.utc)
     attempt.error_message = error_message
     attempt.error_classification = error_classification
+    attempt.failure_domain = failure_domain
     db.add(attempt)
     if commit:
         db.commit()

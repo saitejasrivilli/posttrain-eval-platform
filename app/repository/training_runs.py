@@ -40,3 +40,7 @@ def create(
 
 def get(db: Session, training_run_id: uuid.UUID) -> TrainingRun | None:
     return db.query(TrainingRun).filter(TrainingRun.id == training_run_id).one_or_none()
+
+
+def get_by_job_id(db: Session, job_id: uuid.UUID) -> TrainingRun | None:
+    return db.query(TrainingRun).filter(TrainingRun.job_id == job_id).one_or_none()

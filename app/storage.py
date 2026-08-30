@@ -40,6 +40,11 @@ def upload(client, storage_key: str, data: bytes) -> None:
     client.put_object(Bucket=settings.minio_bucket, Key=storage_key, Body=data)
 
 
+def download(client, storage_key: str) -> bytes:
+    obj = client.get_object(Bucket=settings.minio_bucket, Key=storage_key)
+    return obj["Body"].read()
+
+
 def object_exists_with_hash(client, storage_key: str, expected_hash: str) -> bool:
     """ADR 013's precise UPLOADED invariant: existence alone is not enough --
     re-hash the object and compare."""
