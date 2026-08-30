@@ -15,6 +15,8 @@ from app.models import (  # noqa: F401,E402
     job, outbox, attempt, dlq, capacity, reservation, scheduling_decision,
     artifact, dataset, model, training_run,
     checkpoint, training_metric, training_run_output, attempt_resume_decision,
+    evaluation_config, evaluation_run, evaluation_result, evaluation_metric,
+    quality_gate, quality_gate_result,
 )
 from app.models.capacity import SINGLETON_ID  # noqa: E402
 
@@ -52,7 +54,9 @@ def _clean_table():
             text(
                 "TRUNCATE TABLE jobs, outbox, attempts, dlq, reservations, scheduling_decisions, "
                 "artifacts, datasets, dataset_versions, models, model_versions, training_runs, "
-                "checkpoints, training_metrics, training_run_outputs, attempt_resume_decisions CASCADE"
+                "checkpoints, training_metrics, training_run_outputs, attempt_resume_decisions, "
+                "evaluation_configs, evaluation_runs, evaluation_results, evaluation_metrics, "
+                "quality_gates, quality_gate_results CASCADE"
             )
         )
         conn.execute(
